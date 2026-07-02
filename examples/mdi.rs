@@ -86,7 +86,7 @@ impl Mdi {
         self.opened += 1;
         let n = self.opened;
         let cascade = ((n - 1) % 6) as i16;
-        let bounds = rect(4 + cascade * 3, 1 + cascade, 34, 10);
+        let bounds = rect(4 + cascade * 3, 1 + cascade, 36, 10);
         let window = Window::new(
             bounds,
             &format!("Document {n}"),
@@ -95,9 +95,9 @@ impl Mdi {
                 lines: vec![
                     format!("Window #{n}"),
                     String::new(),
-                    "Drag the title bar to move.".to_string(),
-                    "Drag the bottom-right corner to resize.".to_string(),
-                    "Click anywhere to raise it.".to_string(),
+                    "Drag title bar to move.".to_string(),
+                    "Drag corner (◢) to resize.".to_string(),
+                    "Click to raise.".to_string(),
                 ],
                 style: self.theme.style(Role::WindowFrame),
             }),
