@@ -27,5 +27,7 @@ workspace from the start, so it kept its original number unchanged.
 | [0012](0012-paste-in-via-bracketed-paste.md) | Paste-in via bracketed paste (`Event::Paste`) |
 | [0013](0013-help-format-and-model.md) | Help content: lightweight markup format + block topic model |
 | [0014](0014-documentation-process.md) | Full documentation process (ADRs, roadmap, module specs, rustdoc, CLAUDE.md) |
+| [0015](0015-scroll-chrome-per-view-protocol.md) | Scroll chrome is a per-view protocol (`scroll_metrics`/`set_scroll`) |
+| [0016](0016-unify-window-dialog-dynamic-desktop.md) | Unify `Window` and `Dialog`; a capable, dynamic desktop |
 
 New decision? Copy [`0000-template.md`](0000-template.md).
