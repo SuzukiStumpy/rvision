@@ -405,6 +405,13 @@ impl Shell {
         self.menu_bar.is_open()
     }
 
+    /// A mutable reference to the desktop — the only way in from outside the
+    /// view tree for application code to dynamically open/close/hide/show
+    /// windows (ADR 0016), since `Shell` owns it by value.
+    pub fn desktop_mut(&mut self) -> &mut Desktop {
+        &mut self.desktop
+    }
+
     /// Repositions the three children for a terminal of `size`.
     fn relayout(&mut self, size: Size) {
         self.size = size;
@@ -812,11 +819,11 @@ mod tests {
                 received,
             }),
         );
-        let desktop = Desktop::new(
+        let mut desktop = Desktop::new(
             Rect::from_origin_size(Point::new(0, 1), Size::new(w, h - 2)),
             Cell::from_char('░', theme.style(Role::DesktopBackground)),
-            vec![window],
         );
+        desktop.open(window);
         let status = StatusLine::new(
             Rect::from_origin_size(Point::new(0, h - 1), Size::new(w, 1)),
             vec![

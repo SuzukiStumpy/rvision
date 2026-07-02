@@ -208,6 +208,30 @@ impl Window {
         )
     }
 
+    /// Whether a title-bar drag can move the window — [`Desktop`](super::Desktop)
+    /// consults this before starting a move session (ADR 0016).
+    pub fn is_moveable(&self) -> bool {
+        self.moveable
+    }
+
+    /// Whether a corner drag can resize the window, mirroring
+    /// [`is_moveable`](Self::is_moveable).
+    pub fn is_resizable(&self) -> bool {
+        self.resizable
+    }
+
+    /// Whether the close glyph/`CM_CLOSE` can close the window — checked by
+    /// [`Desktop`](super::Desktop) before acting on `CM_CLOSE`.
+    pub fn is_closable(&self) -> bool {
+        self.closable
+    }
+
+    /// Whether the zoom glyph/`CM_ZOOM` can maximise/restore the window,
+    /// mirroring [`is_closable`](Self::is_closable).
+    pub fn is_zoomable(&self) -> bool {
+        self.zoomable
+    }
+
     /// Whether the window is currently the active (focused) one.
     pub fn is_active(&self) -> bool {
         self.active
@@ -680,6 +704,28 @@ mod tests {
         assert_eq!(w.placement(), Placement::Centered);
         assert!(w.ends_on(CM_OK));
         assert!(w.esc_cancels);
+    }
+
+    #[test]
+    fn query_getters_mirror_the_builder_flags() {
+        // Desktop is a sibling module and can't see the private fields the
+        // tests above check directly — these public getters are its only way
+        // to read them (ADR 0016).
+        let w = plain(rect(0, 0, 10, 4), blank());
+        assert!(w.is_moveable());
+        assert!(w.is_resizable());
+        assert!(w.is_closable());
+        assert!(w.is_zoomable());
+
+        let locked = plain(rect(0, 0, 10, 4), blank())
+            .moveable(false)
+            .resizable(false)
+            .closable(false)
+            .zoomable(false);
+        assert!(!locked.is_moveable());
+        assert!(!locked.is_resizable());
+        assert!(!locked.is_closable());
+        assert!(!locked.is_zoomable());
     }
 
     #[test]

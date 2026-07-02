@@ -1,52 +1,393 @@
-//! The desktop: a backdrop with windows stacked on top of it (TurboVision's
-//! `TDesktop`).
+//! The desktop: a backdrop with a dynamic stack of windows on top of it
+//! (TurboVision's `TDesktop`, made real — ADR 0016).
 //!
-//! It owns its [`Window`]s concretely — not as `Box<dyn View>` — so it can mark
-//! the active (top) one, switching its frame to the doubled border. Windows are
-//! stored bottom-to-top: index 0 draws first, the last draws on top and is the
-//! active window. The desktop fills its whole area with the backdrop first, so the
-//! gaps between and around windows always show the blue field.
+//! Windows are opened and closed at runtime through opaque [`WindowId`]s
+//! rather than a fixed list built once. They are stored bottom-to-top: index
+//! 0 draws first, the last **visible** one draws on top and is active. Any
+//! operation that raises a window (`open`/`show`/`focus`/`cycle_focus`/
+//! click-to-front) physically moves it to the end of the stack, so draw order
+//! stays a true z-order. The desktop fills its whole area with the backdrop
+//! first, so the gaps between and around windows always show the blue field.
+//!
+//! `Desktop` also owns its own drag/resize sessions — mirroring how
+//! [`MenuBar`](super::MenuBar) owns its own open/closed state machine across a
+//! sequence of events rather than handling each one statelessly — and
+//! intercepts `CM_CLOSE`/`CM_ZOOM`/`CM_NEXT`/`CM_PREV` before they would
+//! otherwise just fall through to the active window.
 
 use crate::canvas::Canvas;
 use crate::cell::Cell;
-use crate::event::{Event, EventResult, MouseEvent};
-use crate::geometry::Rect;
+use crate::command::{CM_CLOSE, CM_NEXT, CM_PREV, CM_ZOOM, Command};
+use crate::event::{Event, EventResult, MouseButton, MouseEvent, MouseKind};
+use crate::geometry::{Point, Rect, Size};
 use crate::view::{Context, View};
 
-use super::Window;
+use super::{Frame, Window};
 
-/// A backdrop plus a stack of windows.
+/// An opaque handle to a window `Desktop` owns, from a monotonic counter kept
+/// internally. No locking: the event loop is single-threaded by design
+/// (CLAUDE.md), so there is nothing to race (ADR 0016).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WindowId(u64);
+
+/// The smallest a window may shrink to during a resize session: enough width
+/// for the frame's close/zoom glyphs ([`Frame::glyphs_shown`]'s threshold) and
+/// enough height for the border plus one interior row. An implementation
+/// detail, not a design question (see `docs/specs/desktop.md`'s open
+/// questions).
+const MIN_SIZE: Size = Size::new(10, 3);
+
+/// What a drag session is doing to the window it grabbed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DragKind {
+    /// A title-bar drag: translates the window's origin.
+    Move,
+    /// A bottom-right-corner drag: resizes the window in place.
+    Resize,
+}
+
+/// An in-progress title-bar move or corner resize, owned by `Desktop` for as
+/// long as the mouse button stays down.
+struct DragSession {
+    window: WindowId,
+    kind: DragKind,
+    /// The desktop-local position the session started at.
+    anchor: Point,
+    /// The window's bounds at the moment the session started.
+    start_bounds: Rect,
+}
+
+/// A backdrop plus a dynamic stack of windows.
 pub struct Desktop {
     bounds: Rect,
     backdrop: Cell,
-    windows: Vec<Window>,
-    active: Option<usize>,
+    windows: Vec<(WindowId, Window)>,
+    active: Option<WindowId>,
+    next_id: u64,
+    drag: Option<DragSession>,
 }
 
 impl Desktop {
-    /// Creates a desktop occupying `bounds`, filled with `backdrop`, owning
-    /// `windows` (index 0 at the bottom). The topmost window starts active.
-    pub fn new(bounds: Rect, backdrop: Cell, mut windows: Vec<Window>) -> Self {
-        let active = windows.len().checked_sub(1);
-        if let Some(top) = active {
-            windows[top].set_active(true);
-        }
+    /// An empty desktop occupying `bounds`, filled with `backdrop`.
+    pub fn new(bounds: Rect, backdrop: Cell) -> Self {
         Self {
             bounds,
             backdrop,
-            windows,
-            active,
+            windows: Vec::new(),
+            active: None,
+            next_id: 0,
+            drag: None,
         }
     }
 
-    /// The index of the active (top) window, or `None` when the desktop is empty.
-    pub fn active(&self) -> Option<usize> {
+    /// Adds `window` to the stack, raised to the top and made active.
+    pub fn open(&mut self, window: Window) -> WindowId {
+        let id = WindowId(self.next_id);
+        self.next_id += 1;
+        self.windows.push((id, window));
+        self.raise(id);
+        id
+    }
+
+    /// Asks `id`'s `valid(CM_CLOSE, ctx)`; if it agrees, removes and returns
+    /// the window (transferring active to the next visible one in stack
+    /// order, or `None`). A refusal, or an unknown `id`, leaves the desktop
+    /// unchanged and returns `None` — the window may still have posted a
+    /// follow-up through `ctx` (e.g. "confirm discard").
+    pub fn close(&mut self, id: WindowId, ctx: &mut Context) -> Option<Window> {
+        let pos = self.windows.iter().position(|(wid, _)| *wid == id)?;
+        if !self.windows[pos].1.valid(CM_CLOSE, ctx) {
+            return None;
+        }
+        let (_, window) = self.windows.remove(pos);
+        if self.active == Some(id) {
+            self.active = None;
+            self.activate_topmost_visible();
+        }
+        Some(window)
+    }
+
+    /// Hides `id` (no-op on an unknown id). Reassigns active to the next
+    /// visible window in stack order if `id` was active, without removing it
+    /// or invalidating its `WindowId` (TurboVision's `TView::hide`).
+    pub fn hide(&mut self, id: WindowId) {
+        let Some((_, window)) = self.windows.iter_mut().find(|(wid, _)| *wid == id) else {
+            return;
+        };
+        window.hide();
+        window.set_active(false);
+        if self.active == Some(id) {
+            self.active = None;
+            self.activate_topmost_visible();
+        }
+    }
+
+    /// Shows `id` again, raised to the top and made active — like
+    /// click-to-front, but programmatic. No-op on an unknown id.
+    pub fn show(&mut self, id: WindowId) {
+        let Some((_, window)) = self.windows.iter_mut().find(|(wid, _)| *wid == id) else {
+            return;
+        };
+        window.show();
+        self.raise(id);
+    }
+
+    /// Raises `id` to the top and makes it active. No-op if `id` is hidden or
+    /// unknown.
+    pub fn focus(&mut self, id: WindowId) {
+        let Some((_, window)) = self.windows.iter().find(|(wid, _)| *wid == id) else {
+            return;
+        };
+        if !window.is_visible() {
+            return;
+        }
+        self.raise(id);
+    }
+
+    /// Moves active to the next (or, if `!forward`, previous) *visible*
+    /// window in the current stack order, wrapping, and raises it to the top
+    /// — the keyboard equivalent of click-to-front (`CM_NEXT`/`CM_PREV`). A
+    /// safe no-op with fewer than two visible windows.
+    pub fn cycle_focus(&mut self, forward: bool) {
+        let visible: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| w.is_visible())
+            .map(|(id, _)| *id)
+            .collect();
+        if visible.len() < 2 {
+            return;
+        }
+        let current = self
+            .active
+            .and_then(|id| visible.iter().position(|&v| v == id));
+        let next = match current {
+            Some(i) if forward => (i + 1) % visible.len(),
+            Some(i) => (i + visible.len() - 1) % visible.len(),
+            None => 0,
+        };
+        self.raise(visible[next]);
+    }
+
+    /// The id of the active (topmost visible) window, or `None` if the
+    /// desktop has no visible windows.
+    pub fn active_id(&self) -> Option<WindowId> {
         self.active
+    }
+
+    /// A reference to `id`'s window, or `None` if `id` is unknown.
+    pub fn window(&self, id: WindowId) -> Option<&Window> {
+        self.windows
+            .iter()
+            .find(|(wid, _)| *wid == id)
+            .map(|(_, w)| w)
+    }
+
+    /// A mutable reference to `id`'s window, or `None` if `id` is unknown.
+    pub fn window_mut(&mut self, id: WindowId) -> Option<&mut Window> {
+        self.windows
+            .iter_mut()
+            .find(|(wid, _)| *wid == id)
+            .map(|(_, w)| w)
     }
 
     /// Repositions the desktop (the shell calls this as the terminal resizes).
     pub fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = bounds;
+    }
+
+    /// Moves `id` to the top of the stack and makes it active, deactivating
+    /// whichever window was previously active. No-op if `id` is unknown.
+    fn raise(&mut self, id: WindowId) {
+        let Some(pos) = self.windows.iter().position(|(wid, _)| *wid == id) else {
+            return;
+        };
+        let (_, mut window) = self.windows.remove(pos);
+        window.set_active(true);
+        self.windows.push((id, window));
+        if let Some(previous) = self.active {
+            if previous != id {
+                if let Some((_, w)) = self.windows.iter_mut().find(|(wid, _)| *wid == previous) {
+                    w.set_active(false);
+                }
+            }
+        }
+        self.active = Some(id);
+    }
+
+    /// Reassigns `active` to the topmost visible window in stack order (or
+    /// `None`) without moving anything — the next-topmost-visible window is
+    /// already correctly positioned. Used by [`close`](Self::close)/
+    /// [`hide`](Self::hide), which have already cleared or removed the
+    /// previous active window's own flag.
+    fn activate_topmost_visible(&mut self) {
+        let next = self
+            .windows
+            .iter()
+            .rev()
+            .find(|(_, w)| w.is_visible())
+            .map(|(id, _)| *id);
+        if let Some(id) = next {
+            if let Some((_, w)) = self.windows.iter_mut().find(|(wid, _)| *wid == id) {
+                w.set_active(true);
+            }
+        }
+        self.active = next;
+    }
+
+    /// The topmost visible window whose bounds contain `pos`, if any.
+    fn topmost_visible_at(&self, pos: Point) -> Option<WindowId> {
+        self.windows
+            .iter()
+            .rev()
+            .find(|(_, w)| w.is_visible() && w.bounds().contains(pos))
+            .map(|(id, _)| *id)
+    }
+
+    /// Starts a move or resize session if `local` (already translated into
+    /// `id`'s coordinates) is a valid grab point: the title bar (row 0),
+    /// clear of any drawn close/zoom glyph, for a move; the bottom-right
+    /// corner for a resize. Returns whether a session was started — a `false`
+    /// return leaves the click to be forwarded into the window as usual.
+    fn start_session_if_applicable(&mut self, id: WindowId, local: Point, anchor: Point) -> bool {
+        let Some(window) = self.window(id) else {
+            return false;
+        };
+        let bounds = window.bounds();
+        let width = bounds.width();
+        let height = bounds.height();
+        let on_close = window.is_closable()
+            && Frame::close_span(width).is_some_and(|span| span.contains(&local.x));
+        let on_zoom = window.is_zoomable()
+            && Frame::zoom_span(width).is_some_and(|span| span.contains(&local.x));
+        let kind = if local.y == 0 && !on_close && !on_zoom {
+            window.is_moveable().then_some(DragKind::Move)
+        } else if local.x == width - 1 && local.y == height - 1 {
+            window.is_resizable().then_some(DragKind::Resize)
+        } else {
+            None
+        };
+        let Some(kind) = kind else {
+            return false;
+        };
+        self.drag = Some(DragSession {
+            window: id,
+            kind,
+            anchor,
+            start_bounds: bounds,
+        });
+        true
+    }
+
+    /// Applies the in-progress session's window to `pos`'s movement since the
+    /// anchor. No-op if no session is active.
+    fn continue_drag(&mut self, pos: Point) {
+        let Some(session) = self.drag.take() else {
+            return;
+        };
+        let dx = pos.x - session.anchor.x;
+        let dy = pos.y - session.anchor.y;
+        let new_bounds = match session.kind {
+            DragKind::Move => session.start_bounds.offset(dx, dy),
+            DragKind::Resize => {
+                let width = (session.start_bounds.width() + dx).max(MIN_SIZE.width);
+                let height = (session.start_bounds.height() + dy).max(MIN_SIZE.height);
+                Rect::from_origin_size(session.start_bounds.origin(), Size::new(width, height))
+            }
+        };
+        if let Some(window) = self.window_mut(session.window) {
+            window.set_bounds(new_bounds);
+        }
+        self.drag = Some(session);
+    }
+
+    /// Positional dispatch, click-to-front, and drag/resize session handling
+    /// for a mouse event (ADR 0016).
+    fn handle_mouse(&mut self, mouse: MouseEvent, ctx: &mut Context) -> EventResult {
+        if self.drag.is_some() {
+            return match mouse.kind {
+                MouseKind::Drag(MouseButton::Left) => {
+                    self.continue_drag(mouse.pos);
+                    EventResult::Consumed
+                }
+                MouseKind::Up(MouseButton::Left) => {
+                    self.drag = None;
+                    EventResult::Consumed
+                }
+                // No multi-touch to arbitrate: swallow everything else too,
+                // rather than let it leak through to a window mid-session.
+                _ => EventResult::Consumed,
+            };
+        }
+
+        let Some(id) = self.topmost_visible_at(mouse.pos) else {
+            return EventResult::Ignored;
+        };
+
+        // Click-to-front: any Down raises and activates the window it landed
+        // on, before the click is otherwise acted on (ADR 0016).
+        if matches!(mouse.kind, MouseKind::Down(_)) {
+            self.raise(id);
+        }
+
+        let bounds = match self.window(id) {
+            Some(window) => window.bounds(),
+            None => return EventResult::Ignored,
+        };
+        let local = mouse.pos.offset(-bounds.origin().x, -bounds.origin().y);
+
+        if matches!(mouse.kind, MouseKind::Down(MouseButton::Left))
+            && self.start_session_if_applicable(id, local, mouse.pos)
+        {
+            return EventResult::Consumed;
+        }
+
+        let translated = MouseEvent {
+            pos: local,
+            ..mouse
+        };
+        match self.window_mut(id) {
+            Some(window) => window.handle_event(&Event::Mouse(translated), ctx),
+            None => EventResult::Ignored,
+        }
+    }
+
+    /// Command interception: `CM_CLOSE`/`CM_ZOOM`/`CM_NEXT`/`CM_PREV` act
+    /// here rather than falling straight through to the active window
+    /// (ADR 0016); anything else still does.
+    fn handle_command(&mut self, command: Command, ctx: &mut Context) -> EventResult {
+        if command == CM_NEXT {
+            self.cycle_focus(true);
+            return EventResult::Consumed;
+        }
+        if command == CM_PREV {
+            self.cycle_focus(false);
+            return EventResult::Consumed;
+        }
+        let Some(active) = self.active else {
+            return EventResult::Ignored;
+        };
+        if command == CM_CLOSE {
+            if !self.window(active).is_some_and(Window::is_closable) {
+                return EventResult::Ignored;
+            }
+            self.close(active, ctx);
+            return EventResult::Consumed;
+        }
+        if command == CM_ZOOM {
+            if !self.window(active).is_some_and(Window::is_zoomable) {
+                return EventResult::Ignored;
+            }
+            let bounds = self.bounds;
+            if let Some(window) = self.window_mut(active) {
+                window.toggle_zoom(bounds);
+            }
+            return EventResult::Consumed;
+        }
+        match self.window_mut(active) {
+            Some(window) => window.handle_event(&Event::Command(command), ctx),
+            None => EventResult::Ignored,
+        }
     }
 }
 
@@ -58,7 +399,10 @@ impl View for Desktop {
     fn draw(&self, canvas: &mut Canvas) {
         let area = canvas.bounds();
         canvas.fill(area, &self.backdrop);
-        for window in &self.windows {
+        for (_, window) in &self.windows {
+            if !window.is_visible() {
+                continue;
+            }
             // The window casts its drop shadow on the backdrop (or a lower
             // window) before it is drawn on top of that shadow (ADR 0011).
             if let Some(style) = window.drop_shadow() {
@@ -71,29 +415,21 @@ impl View for Desktop {
 
     fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
         match event {
-            // Positional: the topmost window under the pointer, in its local coords.
-            Event::Mouse(mouse) => {
-                for window in self.windows.iter_mut().rev() {
-                    let bounds = window.bounds();
-                    if bounds.contains(mouse.pos) {
-                        let local = MouseEvent {
-                            pos: mouse.pos.offset(-bounds.origin().x, -bounds.origin().y),
-                            ..*mouse
-                        };
-                        return window.handle_event(&Event::Mouse(local), ctx);
-                    }
-                }
-                EventResult::Ignored
-            }
+            Event::Mouse(mouse) => self.handle_mouse(*mouse, ctx),
+            Event::Command(command) => self.handle_command(*command, ctx),
             // Focused: only the active window. Its ignored result bubbles up so the
             // shell can try the status line next (ADR 0009). Paste rides along.
-            Event::Key(_) | Event::Command(_) | Event::Paste(_) => match self.active {
-                Some(index) => self.windows[index].handle_event(event, ctx),
+            Event::Key(_) | Event::Paste(_) => match self.active {
+                Some(id) => match self.window_mut(id) {
+                    Some(window) => window.handle_event(event, ctx),
+                    None => EventResult::Ignored,
+                },
                 None => EventResult::Ignored,
             },
-            // Broadcast / resize / idle: every window.
+            // Broadcast / resize / idle: every window, hidden or not, so a
+            // hidden window's state stays current for when it's shown again.
             Event::Broadcast(_) | Event::Resize(_) | Event::Idle => {
-                for window in &mut self.windows {
+                for (_, window) in &mut self.windows {
                     window.handle_event(event, ctx);
                 }
                 EventResult::Ignored
@@ -104,6 +440,15 @@ impl View for Desktop {
     fn focusable(&self) -> bool {
         self.active.is_some()
     }
+
+    fn valid(&mut self, command: Command, ctx: &mut Context) -> bool {
+        // Every window is asked, not just the active one — a non-short-
+        // circuiting fold, like Group's own fan-out, so several unsaved
+        // windows can each post their own follow-up in one pass (ADR 0016).
+        self.windows
+            .iter_mut()
+            .fold(true, |ok, (_, w)| w.valid(command, ctx) && ok)
+    }
 }
 
 #[cfg(test)]
@@ -111,15 +456,24 @@ mod tests {
     use super::*;
     use crate::buffer::Buffer;
     use crate::color::Style;
-    use crate::command::{CM_OK, Command, CommandSet};
+    use crate::command::{CM_OK, CM_USER, CommandSet};
     use crate::event::{KeyCode, KeyEvent, Modifiers, MouseButton, MouseKind};
-    use crate::geometry::{Point, Size};
+    use crate::geometry::Size;
     use crate::theme::{Role, Theme};
+    use crate::view::StaticText;
     use std::cell::RefCell;
     use std::rc::Rc;
 
     fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
         Rect::from_origin_size(Point::new(x, y), Size::new(w, h))
+    }
+
+    fn blank() -> Box<dyn View> {
+        Box::new(StaticText::new(rect(0, 0, 1, 1), "", Style::new()))
+    }
+
+    fn blank_window_at(bounds: Rect) -> Window {
+        Window::new(bounds, "W", &Theme::default(), blank())
     }
 
     /// An interior that records every event it sees and posts a command on Enter.
@@ -144,7 +498,7 @@ mod tests {
         }
     }
 
-    fn window(tag: u16, bounds: Rect, log: &Rc<RefCell<Vec<(u16, Event)>>>) -> Window {
+    fn recorder_window(tag: u16, bounds: Rect, log: &Rc<RefCell<Vec<(u16, Event)>>>) -> Window {
         Window::new(
             bounds,
             "W",
@@ -157,10 +511,13 @@ mod tests {
         )
     }
 
+    // --- Basic rendering/dispatch (pre-existing behaviour, adapted to the
+    // dynamic open() API) ---
+
     #[test]
     fn empty_desktop_just_paints_the_backdrop() {
-        let desk = Desktop::new(rect(0, 0, 3, 2), Cell::from_char('░', Style::new()), vec![]);
-        assert_eq!(desk.active(), None);
+        let desk = Desktop::new(rect(0, 0, 3, 2), Cell::from_char('░', Style::new()));
+        assert_eq!(desk.active_id(), None);
         assert!(!desk.focusable());
         let mut buf = Buffer::new(Size::new(3, 2));
         let mut canvas = Canvas::new(&mut buf);
@@ -172,50 +529,33 @@ mod tests {
     fn a_window_casts_its_drop_shadow_on_the_backdrop() {
         let log = Rc::new(RefCell::new(Vec::new()));
         let shadow = Theme::default().style(Role::Shadow);
-        // An 8×4 window at (2, 1), clear of the surface edges so its whole shadow
-        // lands on the backdrop: the right strip starts at x = 10 (ADR 0011).
-        let desk = Desktop::new(
-            rect(0, 0, 20, 10),
-            Cell::from_char('░', Style::new()),
-            vec![window(1, rect(2, 1, 8, 4), &log)],
-        );
+        let mut desk = Desktop::new(rect(0, 0, 20, 10), Cell::from_char('░', Style::new()));
+        desk.open(recorder_window(1, rect(2, 1, 8, 4), &log));
         let mut buf = Buffer::new(Size::new(20, 10));
         let mut canvas = Canvas::new(&mut buf);
         desk.draw(&mut canvas);
 
-        // The shadow keeps the backdrop glyph but is repainted in the shadow style.
         let shadowed = buf.get(Point::new(10, 2)).unwrap();
         assert_eq!(shadowed.grapheme().to_string(), "░");
         assert_eq!(shadowed.style(), shadow);
-        // Backdrop clear of the window and its shadow is left alone.
         assert_eq!(buf.get(Point::new(0, 9)).unwrap().style(), Style::new());
     }
 
     #[test]
     fn topmost_window_is_active() {
         let log = Rc::new(RefCell::new(Vec::new()));
-        let desk = Desktop::new(
-            rect(0, 0, 40, 12),
-            Cell::default(),
-            vec![
-                window(1, rect(0, 0, 10, 5), &log),
-                window(2, rect(5, 2, 10, 5), &log),
-            ],
-        );
-        assert_eq!(desk.active(), Some(1));
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        desk.open(recorder_window(1, rect(0, 0, 10, 5), &log));
+        let b = desk.open(recorder_window(2, rect(5, 2, 10, 5), &log));
+        assert_eq!(desk.active_id(), Some(b));
     }
 
     #[test]
     fn keys_reach_only_the_active_window() {
         let log = Rc::new(RefCell::new(Vec::new()));
-        let mut desk = Desktop::new(
-            rect(0, 0, 40, 12),
-            Cell::default(),
-            vec![
-                window(1, rect(0, 0, 10, 5), &log),
-                window(2, rect(12, 0, 10, 5), &log),
-            ],
-        );
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        desk.open(recorder_window(1, rect(0, 0, 10, 5), &log));
+        desk.open(recorder_window(2, rect(12, 0, 10, 5), &log));
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
         desk.handle_event(
@@ -230,14 +570,10 @@ mod tests {
     #[test]
     fn a_command_from_the_active_window_bubbles_to_the_context() {
         let log = Rc::new(RefCell::new(Vec::new()));
-        let mut desk = Desktop::new(
-            rect(0, 0, 40, 12),
-            Cell::default(),
-            vec![window(1, rect(0, 0, 10, 5), &log)],
-        );
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        desk.open(recorder_window(1, rect(0, 0, 10, 5), &log));
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
-        // Enter lands on the active window's interior, which posts CM_OK.
         desk.handle_event(
             &Event::Key(KeyEvent::new(KeyCode::Enter, Modifiers::NONE)),
             &mut ctx,
@@ -248,19 +584,11 @@ mod tests {
     #[test]
     fn a_click_goes_to_the_topmost_window_under_it() {
         let log = Rc::new(RefCell::new(Vec::new()));
-        let mut desk = Desktop::new(
-            rect(0, 0, 40, 12),
-            Cell::default(),
-            // Two overlapping windows; window 2 (later) is on top.
-            vec![
-                window(1, rect(0, 0, 12, 6), &log),
-                window(2, rect(3, 2, 12, 6), &log),
-            ],
-        );
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        desk.open(recorder_window(1, rect(0, 0, 12, 6), &log));
+        desk.open(recorder_window(2, rect(3, 2, 12, 6), &log));
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
-        // (5,4) is inside both; the top window 2 must claim it, in its local coords
-        // and inset into its interior.
         desk.handle_event(
             &Event::Mouse(MouseEvent {
                 kind: MouseKind::Down(MouseButton::Left),
@@ -272,5 +600,460 @@ mod tests {
         let seen = log.borrow();
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].0, 2);
+    }
+
+    // --- Dynamic open/close/hide/show/focus/cycle_focus (ADR 0016) ---
+
+    #[test]
+    fn open_returns_distinct_ids_and_activates_each_in_turn() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let a = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        assert_eq!(desk.active_id(), Some(a));
+        let b = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        assert_ne!(a, b);
+        assert_eq!(desk.active_id(), Some(b));
+    }
+
+    #[test]
+    fn close_on_a_refusing_window_is_a_no_op() {
+        struct Vetoer;
+        impl View for Vetoer {
+            fn bounds(&self) -> Rect {
+                rect(0, 0, 5, 1)
+            }
+            fn draw(&self, _canvas: &mut Canvas) {}
+            fn valid(&mut self, command: Command, _ctx: &mut Context) -> bool {
+                command != CM_CLOSE
+            }
+        }
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let id = desk.open(Window::new(
+            rect(0, 0, 10, 4),
+            "W",
+            &Theme::default(),
+            Box::new(Vetoer),
+        ));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(desk.close(id, &mut ctx).is_none());
+        assert!(desk.window(id).is_some());
+    }
+
+    #[test]
+    fn close_on_the_active_window_transfers_active_to_the_next_visible_window() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let a = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        let b = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        assert_eq!(desk.active_id(), Some(b));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(desk.close(b, &mut ctx).is_some());
+        assert_eq!(desk.active_id(), Some(a));
+        assert!(desk.window(b).is_none());
+    }
+
+    #[test]
+    fn hide_reassigns_active_and_show_restores_it_on_top() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let a = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        let b = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+
+        desk.hide(b);
+        assert!(!desk.window(b).unwrap().is_visible());
+        assert_eq!(desk.active_id(), Some(a));
+
+        desk.show(b);
+        assert!(desk.window(b).unwrap().is_visible());
+        assert_eq!(desk.active_id(), Some(b));
+    }
+
+    #[test]
+    fn unknown_window_id_is_a_safe_no_op_everywhere() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let real = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        let fake = WindowId(9999);
+
+        desk.hide(fake);
+        desk.show(fake);
+        desk.focus(fake);
+        assert!(desk.window(fake).is_none());
+        assert!(desk.window_mut(fake).is_none());
+
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(desk.close(fake, &mut ctx).is_none());
+        assert_eq!(desk.active_id(), Some(real));
+    }
+
+    #[test]
+    fn focus_changes_which_overlapping_window_is_on_top() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let a = desk.open(recorder_window(1, rect(0, 0, 12, 6), &log));
+        desk.open(recorder_window(2, rect(3, 2, 12, 6), &log));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(5, 4),
+            modifiers: Modifiers::NONE,
+        });
+
+        desk.handle_event(&click, &mut ctx);
+        assert_eq!(log.borrow().last().unwrap().0, 2, "b is on top by default");
+
+        desk.focus(a);
+        desk.handle_event(&click, &mut ctx);
+        assert_eq!(
+            log.borrow().last().unwrap().0,
+            1,
+            "focusing a brings it to the top"
+        );
+    }
+
+    // --- Command interception (ADR 0016) ---
+
+    #[test]
+    fn cm_close_closes_the_active_window_when_closable() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let id = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert_eq!(
+            desk.handle_event(&Event::Command(CM_CLOSE), &mut ctx),
+            EventResult::Consumed
+        );
+        assert!(desk.window(id).is_none());
+        assert_eq!(desk.active_id(), None);
+    }
+
+    #[test]
+    fn cm_close_is_ignored_when_the_active_window_is_not_closable() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let id = desk
+            .open(Window::new(rect(0, 0, 10, 4), "W", &Theme::default(), blank()).closable(false));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert_eq!(
+            desk.handle_event(&Event::Command(CM_CLOSE), &mut ctx),
+            EventResult::Ignored
+        );
+        assert!(desk.window(id).is_some());
+    }
+
+    #[test]
+    fn cm_zoom_toggles_the_active_window_when_zoomable() {
+        let desktop_bounds = rect(0, 0, 40, 20);
+        let mut desk = Desktop::new(desktop_bounds, Cell::default());
+        let id = desk.open(blank_window_at(rect(2, 1, 10, 5)));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+
+        assert_eq!(
+            desk.handle_event(&Event::Command(CM_ZOOM), &mut ctx),
+            EventResult::Consumed
+        );
+        assert!(desk.window(id).unwrap().is_maximized());
+        assert_eq!(desk.window(id).unwrap().bounds(), desktop_bounds);
+
+        desk.handle_event(&Event::Command(CM_ZOOM), &mut ctx);
+        assert!(!desk.window(id).unwrap().is_maximized());
+        assert_eq!(desk.window(id).unwrap().bounds(), rect(2, 1, 10, 5));
+    }
+
+    #[test]
+    fn cm_zoom_is_ignored_when_the_active_window_is_not_zoomable() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk
+            .open(Window::new(rect(2, 1, 10, 5), "W", &Theme::default(), blank()).zoomable(false));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert_eq!(
+            desk.handle_event(&Event::Command(CM_ZOOM), &mut ctx),
+            EventResult::Ignored
+        );
+        assert!(!desk.window(id).unwrap().is_maximized());
+    }
+
+    #[test]
+    fn cm_next_and_cm_prev_cycle_focus_and_raise() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let a = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        desk.open(blank_window_at(rect(0, 0, 10, 4))); // b
+        let c = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        assert_eq!(desk.active_id(), Some(c));
+
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert_eq!(
+            desk.handle_event(&Event::Command(CM_NEXT), &mut ctx),
+            EventResult::Consumed
+        );
+        assert_eq!(
+            desk.active_id(),
+            Some(a),
+            "wraps from the top back to the bottom"
+        );
+
+        assert_eq!(
+            desk.handle_event(&Event::Command(CM_PREV), &mut ctx),
+            EventResult::Consumed
+        );
+        assert_eq!(
+            desk.active_id(),
+            Some(c),
+            "steps back one in the stack order left after raising a"
+        );
+    }
+
+    #[test]
+    fn cm_next_is_a_safe_no_op_with_fewer_than_two_visible_windows() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert_eq!(
+            desk.handle_event(&Event::Command(CM_NEXT), &mut ctx),
+            EventResult::Consumed
+        );
+        assert_eq!(desk.active_id(), Some(id));
+    }
+
+    // --- valid() fans out to every window (ADR 0016) ---
+
+    #[test]
+    fn valid_polls_every_window_and_a_single_refusal_vetoes() {
+        struct ValidSpy {
+            tag: u16,
+            refuses: bool,
+            seen: Rc<RefCell<Vec<u16>>>,
+        }
+        impl View for ValidSpy {
+            fn bounds(&self) -> Rect {
+                rect(0, 0, 5, 1)
+            }
+            fn draw(&self, _canvas: &mut Canvas) {}
+            fn valid(&mut self, _command: Command, _ctx: &mut Context) -> bool {
+                self.seen.borrow_mut().push(self.tag);
+                !self.refuses
+            }
+        }
+        const CM_APPLY: Command = Command(CM_USER + 1);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        desk.open(Window::new(
+            rect(0, 0, 10, 5),
+            "A",
+            &Theme::default(),
+            Box::new(ValidSpy {
+                tag: 1,
+                refuses: true,
+                seen: Rc::clone(&seen),
+            }),
+        ));
+        desk.open(Window::new(
+            rect(15, 0, 10, 5),
+            "B",
+            &Theme::default(),
+            Box::new(ValidSpy {
+                tag: 2,
+                refuses: false,
+                seen: Rc::clone(&seen),
+            }),
+        ));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(!desk.valid(CM_APPLY, &mut ctx));
+        assert_eq!(
+            *seen.borrow(),
+            vec![1, 2],
+            "both windows were asked, not short-circuited"
+        );
+    }
+
+    // --- Rendering: hidden windows are skipped entirely (ADR 0016) ---
+
+    #[test]
+    fn a_hidden_window_is_not_drawn() {
+        let mut desk = Desktop::new(rect(0, 0, 10, 4), Cell::from_char('.', Style::new()));
+        let id = desk.open(Window::new(
+            rect(0, 0, 10, 4),
+            "W",
+            &Theme::default(),
+            Box::new(StaticText::new(rect(0, 0, 5, 1), "hi", Style::new())),
+        ));
+        desk.hide(id);
+        let mut buf = Buffer::new(Size::new(10, 4));
+        let mut canvas = Canvas::new(&mut buf);
+        desk.draw(&mut canvas);
+        assert!(
+            buf.to_text()
+                .chars()
+                .filter(|c| *c != '\n')
+                .all(|c| c == '.'),
+            "a hidden window draws no chrome, shadow, or interior"
+        );
+    }
+
+    // --- Drag/resize sessions (ADR 0016) ---
+
+    #[test]
+    fn title_bar_drag_moves_a_moveable_window() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk.open(blank_window_at(rect(2, 1, 10, 5)));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+
+        // Window-local (5, 0): plain title bar, clear of the close/zoom
+        // glyph spans on a 10-wide frame (close: 2..5, zoom: 6..9).
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(7, 1),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(desk.handle_event(&down, &mut ctx), EventResult::Consumed);
+        assert_eq!(
+            desk.window(id).unwrap().bounds(),
+            rect(2, 1, 10, 5),
+            "no move yet, just anchored"
+        );
+
+        let drag = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(10, 3),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(desk.handle_event(&drag, &mut ctx), EventResult::Consumed);
+        assert_eq!(desk.window(id).unwrap().bounds(), rect(5, 3, 10, 5));
+
+        let up = Event::Mouse(MouseEvent {
+            kind: MouseKind::Up(MouseButton::Left),
+            pos: Point::new(10, 3),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(desk.handle_event(&up, &mut ctx), EventResult::Consumed);
+
+        // The session has ended: a stray drag with no preceding Down does nothing.
+        let stray = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(20, 10),
+            modifiers: Modifiers::NONE,
+        });
+        desk.handle_event(&stray, &mut ctx);
+        assert_eq!(desk.window(id).unwrap().bounds(), rect(5, 3, 10, 5));
+    }
+
+    #[test]
+    fn title_bar_drag_is_a_no_op_on_a_non_moveable_window() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk
+            .open(Window::new(rect(2, 1, 10, 5), "W", &Theme::default(), blank()).moveable(false));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(7, 1),
+            modifiers: Modifiers::NONE,
+        });
+        // Forwarded into the window, which ignores a bare title-bar click
+        // (its own test coverage) since no session was started.
+        assert_eq!(desk.handle_event(&down, &mut ctx), EventResult::Ignored);
+        let drag = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(10, 3),
+            modifiers: Modifiers::NONE,
+        });
+        desk.handle_event(&drag, &mut ctx);
+        assert_eq!(desk.window(id).unwrap().bounds(), rect(2, 1, 10, 5));
+    }
+
+    #[test]
+    fn corner_drag_resizes_a_resizable_window() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk.open(blank_window_at(rect(2, 1, 10, 5)));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        // Window-local (9, 4): bottom-right corner.
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(11, 5),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(desk.handle_event(&down, &mut ctx), EventResult::Consumed);
+        let drag = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(14, 7),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(desk.handle_event(&drag, &mut ctx), EventResult::Consumed);
+        assert_eq!(desk.window(id).unwrap().bounds(), rect(2, 1, 13, 7));
+    }
+
+    #[test]
+    fn corner_drag_is_a_no_op_on_a_non_resizable_window() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk
+            .open(Window::new(rect(2, 1, 10, 5), "W", &Theme::default(), blank()).resizable(false));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(11, 5),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(desk.handle_event(&down, &mut ctx), EventResult::Ignored);
+        let drag = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(14, 7),
+            modifiers: Modifiers::NONE,
+        });
+        desk.handle_event(&drag, &mut ctx);
+        assert_eq!(desk.window(id).unwrap().bounds(), rect(2, 1, 10, 5));
+    }
+
+    #[test]
+    fn resize_drag_floors_at_the_minimum_size() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk.open(blank_window_at(rect(2, 1, 10, 5)));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(11, 5),
+            modifiers: Modifiers::NONE,
+        });
+        desk.handle_event(&down, &mut ctx);
+        let drag = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(-20, -20),
+            modifiers: Modifiers::NONE,
+        });
+        desk.handle_event(&drag, &mut ctx);
+        let bounds = desk.window(id).unwrap().bounds();
+        assert_eq!(bounds.size(), MIN_SIZE);
+        assert_eq!(bounds.origin(), Point::new(2, 1));
+    }
+
+    #[test]
+    fn a_click_on_a_glyph_does_not_start_a_move_session() {
+        // Row 0, but on the close glyph: raises the window and forwards the
+        // click into it (which itself posts CM_CLOSE) rather than starting a
+        // move session — Window handles its own glyphs (ADR 0016).
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk.open(blank_window_at(rect(2, 1, 10, 5)));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let close_x = Frame::close_span(10).unwrap().start;
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(2 + close_x, 1),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(desk.handle_event(&down, &mut ctx), EventResult::Consumed);
+        assert_eq!(ctx.posted(), &[Event::Command(CM_CLOSE)]);
+        assert!(
+            desk.window(id).unwrap().bounds() == rect(2, 1, 10, 5),
+            "the click acted on the glyph, not a drag"
+        );
     }
 }

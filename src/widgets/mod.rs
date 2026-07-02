@@ -34,7 +34,7 @@ mod window;
 pub use background::Background;
 pub use button::Button;
 pub use check_box::CheckBox;
-pub use desktop::Desktop;
+pub use desktop::{Desktop, WindowId};
 pub use file_dialog::{FileDialog, FileDialogResult};
 pub use frame::Frame;
 pub use help_pane::HelpPane;

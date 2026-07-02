@@ -118,11 +118,11 @@ fn main() -> io::Result<()> {
             style: theme.style(Role::WindowFrame),
         }),
     );
-    let desktop = Desktop::new(
+    let mut desktop = Desktop::new(
         rect(0, 1, desk_w, desk_h),
         Cell::from_char('░', theme.style(Role::DesktopBackground)),
-        vec![window],
     );
+    desktop.open(window);
 
     let status = StatusLine::new(
         rect(0, size.height - 1, size.width, 1),
