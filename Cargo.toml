@@ -1,0 +1,22 @@
+[package]
+name = "rvision"
+version = "0.1.0"
+description = "A TurboVision-style terminal UI framework, hand-built in Rust."
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["medwards"]
+repository = "https://github.com/SuzukiStumpy/rvision"
+
+[dependencies]
+unicode-width = "0.2"             # cell display width (ADR 0006)
+unicode-segmentation = "1"        # grapheme segmentation (ADR 0006)
+crossterm = "0.28"                # CrosstermBackend (ADR 0001)
+# Adding anything beyond these requires a new ADR (see docs/adr/0001).
+
+[dev-dependencies]
+insta = "1"                       # snapshot render tests
+
+[profile.release]
+opt-level = 3
+lto = "thin"

@@ -1,0 +1,18 @@
+# Rust build artifacts
+/target
+**/*.rs.bk
+*.pdb
+
+# Insta snapshot review leftovers (committed snapshots are *.snap, not these)
+**/*.snap.new
+
+# Editor/OS noise
+*.swp
+.DS_Store
+
+# Local VS Code settings: machine-specific absolute paths (rust-analyzer
+# linkedProjects pinned to the canonical /var/home root — see .vscode/settings.json)
+/.vscode/
+
+# Local plugin storage
+.VSCodeCounter/
