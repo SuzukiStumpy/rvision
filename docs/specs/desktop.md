@@ -192,3 +192,10 @@ post any of the four directly — `Desktop` is what gives them effect.
   a composed `ListBox` + `HelpPane` interior, opened non-modally via
   `desktop.open(...)`, once this lands — noted here as the first real
   consumer, not designed in this pass.
+- **Double-click the title bar to zoom/restore.** Windows convention, not yet
+  supported: today a title-bar click (outside the close/zoom glyph spans)
+  only ever starts a move session (`start_session_if_applicable`), regardless
+  of `MouseKind`. Recognising `DoubleClick(Left)` there and calling
+  `Window::toggle_zoom` instead — the same glyph-span exclusion already
+  computed, one more arm — would sit alongside the existing zoom glyph/
+  `CM_ZOOM` as a second way to reach it. Logged, not scheduled.
