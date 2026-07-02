@@ -432,7 +432,18 @@ impl Shell {
     /// Positional routing: the region under the pointer, in that region's local
     /// coordinates. (Behaviour inside each region is mostly Phase 9; the seam is
     /// here from the start — ADR 0007.)
+    ///
+    /// **An open pull-down is the exception.** It draws as a full-frame overlay
+    /// below the bar's own one-row bounds (ADR 0009), so the region carve-up
+    /// below would hand a click on an item to the desktop underneath it instead
+    /// — the same "claim everything while open" modality `handle_key` already
+    /// gives the bar for keys. `MenuBar::handle_mouse` expects screen
+    /// coordinates (the space it and its overlay draw in), so this is the one
+    /// case that skips the region-local translation entirely.
     fn handle_mouse(&mut self, mouse: MouseEvent, ctx: &mut Context) -> EventResult {
+        if self.menu_bar.is_open() {
+            return self.menu_bar.handle_event(&Event::Mouse(mouse), ctx);
+        }
         let r = regions(self.size);
         for (region, target) in [
             (r.menu, &mut self.menu_bar as &mut dyn View),
@@ -510,7 +521,7 @@ mod tests {
     use crate::cell::Cell;
     use crate::color::Style;
     use crate::command::{CM_CANCEL, CM_OK, CM_USER, Command};
-    use crate::event::{KeyCode, KeyEvent, Modifiers};
+    use crate::event::{KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseKind};
     use crate::geometry::{Point, Rect, Size};
     use crate::theme::{Role, Theme};
     use crate::view::StaticText;
@@ -930,6 +941,43 @@ mod tests {
         );
         assert!(ctx.posted().is_empty());
         assert!(sh.menu_is_open());
+    }
+
+    #[test]
+    fn clicking_a_pulldown_item_reaches_the_menu_bar_not_the_desktop_underneath() {
+        // The pull-down draws as a full-frame overlay below the bar's own
+        // one-row bounds (ADR 0009), so a click on an item lands in what the
+        // region carve-up would otherwise treat as the desktop. The menu bar
+        // must see it first, in screen coordinates, same as it already does
+        // for keys while open.
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let mut sh = shell(Size::new(40, 10), Rc::clone(&received));
+        let cs = CommandSet::new();
+
+        sh.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('f'), Modifiers::ALT)),
+            &mut Context::new(&cs),
+        );
+        assert!(sh.menu_is_open());
+
+        // File's only item, "Exit" (CM_QUIT), is the pull-down's first row —
+        // screen (2, 2): box left 0, top 1, one border row above the item.
+        let mut ctx = Context::new(&cs);
+        sh.handle_event(
+            &Event::Mouse(MouseEvent {
+                kind: MouseKind::Down(MouseButton::Left),
+                pos: Point::new(2, 2),
+                modifiers: Modifiers::NONE,
+            }),
+            &mut ctx,
+        );
+
+        assert_eq!(ctx.posted(), &[Event::Command(CM_QUIT)]);
+        assert!(!sh.menu_is_open(), "choosing an item closes the pull-down");
+        assert!(
+            received.borrow().is_empty(),
+            "the click never reached the window underneath"
+        );
     }
 
     #[test]
