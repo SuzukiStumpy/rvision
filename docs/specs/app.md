@@ -1,10 +1,12 @@
 # Module spec: `rvision::app`
 
 - **Status:** Done (loop + `Root`); the Phase 4 application root `Shell` is specced
-  separately in [`shell.md`](shell.md)
+  separately in [`shell.md`](shell.md); `Root`'s `CM_QUIT` handling and
+  `exec_view`'s signature are updated (Draft) per ADR 0016
 - **Phase:** 2 (real terminal & event loop); `app::Shell` added in Phase 4
 - **Related ADRs:** 0002 (Backend/EventSource seam), 0004 (events), 0001 (panic-safe
-  terminal restore lives at the crossterm boundary), 0009 (`Shell`)
+  terminal restore lives at the crossterm boundary), 0009 (`Shell`), 0016
+  (`Window` replaces `Modal`; `Root` asks `valid` before honouring `CM_QUIT`)
 
 ## Purpose
 
@@ -34,9 +36,10 @@ impl<T: Backend + EventSource> Application<T> {
     pub fn terminal(&self) -> &T;
     pub fn terminal_mut(&mut self) -> &mut T;
     pub fn run(&mut self, program: &mut impl Program) -> io::Result<()>;
-    // Phase 5 (ADR 0010): run a modal view over a drawn background, returning the
-    // command that closed it. See dialog.md.
-    pub fn exec_view(&mut self, background: &mut dyn Program, modal: &mut dyn Modal)
+    // ADR 0010: run a Window modally over a drawn background, returning the
+    // command that closed it. `Modal` is gone (ADR 0016) — exec_view takes
+    // the one concrete type that ever needed it. See window.md.
+    pub fn exec_view(&mut self, background: &mut dyn Program, window: &mut Window)
         -> io::Result<Command>;
 }
 ```
@@ -53,9 +56,15 @@ impl<T: Backend + EventSource> Application<T> {
 - **Resize:** the loop reads `terminal.size()` afresh each frame, so the backend
   updating its reported size while handling a resize (see `EventSource`) is enough
   to relayout next frame.
-- **Quitting:** the `Program` decides via `is_finished`. Phase 2 has no command
-  bubbling yet, so quit is a flag the program sets (the demo flips it on Ctrl-Q);
-  Phase 3 replaces this with a `cmQuit` command bubbling to the app (ADR 0004).
+- **Quitting:** the `Program` decides via `is_finished`. `Root` (below) is the
+  real `Program` the tree runs under: a posted `CM_QUIT` reaching it is what
+  sets `finished`. **Gated by `valid` (ADR 0016):** before honouring it,
+  `Root` calls `self.view.valid(CM_QUIT, &mut ctx)` on its single root view —
+  which, through `Desktop`'s and `Group`'s own fan-out overrides (see
+  [`desktop.md`](desktop.md), [`view.md`](view.md)), reaches every open
+  window, not just the active one. A refusal leaves `Root` running; any
+  follow-up the refusing view posted (e.g. "confirm discard") is drained and
+  re-dispatched exactly like any other posted event.
 - **Panic safety:** the real backend restores the terminal on `Drop` *and* via a
   panic hook (see `crossterm_backend`); `Application` owning the terminal means any
   unwind through `run` restores it.
@@ -63,12 +72,21 @@ impl<T: Backend + EventSource> Application<T> {
 ## Collaborators
 
 `backend::{Backend, EventSource}`, `buffer::Buffer`, `event::{Event, EventResult}`.
+`Root`'s `CM_QUIT` gate and `exec_view` additionally depend on
+`view::{View, Context}` and `widgets::Window` (see [`window.md`](window.md)).
 
 ## Test plan (write these first)
 
 - **Interaction (scripted terminal):** quits on the scripted quit key and the
   drawn content reaches the screen; a timed-out poll delivers exactly one `Idle`;
   a scripted resize makes the next `draw` receive the new size.
+- **`Root` + `valid`:** a root view whose `valid(CM_QUIT, _)` refuses leaves
+  `Root` unfinished after a posted `CM_QUIT`; one that agrees finishes it; a
+  refusal that also posts a follow-up command sees that command re-dispatched
+  into the tree in the same turn.
+- **`exec_view`:** unchanged in shape from today, now over `&mut Window`
+  instead of `&mut dyn Modal` — see [`window.md`](window.md)'s test plan for
+  the window-specific cases (`ends_on`, `Esc`, default command).
 
 ## Open questions
 

@@ -1,8 +1,8 @@
 # Module spec: `rvision::view`
 
-- **Status:** Done
-- **Phase:** 3 (View system)
-- **Related ADRs:** 0003 (retained tree, parent-owns-children, commands up / broadcasts down), 0004 (three-phase dispatch, `EventResult`), 0008 (owner-relative coords + `Canvas`)
+- **Status:** Done; extended (Draft) for the ADR 0015/0016 protocols below
+- **Phase:** 3 (View system); scroll/valid protocols added post-extraction
+- **Related ADRs:** 0003 (retained tree, parent-owns-children, commands up / broadcasts down), 0004 (three-phase dispatch, `EventResult`), 0008 (owner-relative coords + `Canvas`), 0015 (scroll chrome protocol), 0016 (unify `Window`/`Dialog`, `valid` veto protocol, `Modal` trait removed)
 
 ## Purpose
 
@@ -30,12 +30,19 @@ pub trait View {
     fn focusable(&self) -> bool { false }     // can this view hold focus?
     fn set_focused(&mut self, focused: bool) {}  // owner pushes focus (ADR 0010)
     fn drop_shadow(&self) -> Option<Style> { None }  // shadow the owner paints (ADR 0011)
-}
 
-// A view runnable modally by app::exec_view (ADR 0010): adds size + ending commands.
-pub trait Modal: View {
-    fn size(&self) -> Size;
-    fn ends_on(&self, command: Command) -> bool;
+    // What this view needs scrolled, or None; queried every draw (ADR 0015).
+    fn scroll_metrics(&self) -> Option<ScrollMetrics> { None }
+    // An owner's scroll chrome pushing a new position it computed (ADR 0015).
+    fn set_scroll(&mut self, offset: Point) { let _ = offset; }
+
+    // Whether it is OK to act on `command` right now — TurboVision's
+    // `TView::valid` (ADR 0016). Default: always OK. A view that must refuse
+    // (e.g. unsaved changes) can also post a follow-up command through `ctx`
+    // in the same call, to ask its owner to run a confirmation flow, and try
+    // again once that resolves. A view never runs its own modal loop
+    // directly (ADR 0003) — only whoever owns a concrete `Application` can.
+    fn valid(&mut self, command: Command, ctx: &mut Context) -> bool { true }
 }
 
 pub struct Context<'a> { /* posted queue + &CommandSet */ }
@@ -83,6 +90,20 @@ impl Group {
     bubble (ADR 0003).
   - *Broadcast* (`Broadcast`, `Resize`, `Idle`): delivered to **all** children;
     the group returns `Ignored` (broadcasts don't stop).
+- **`valid` fans out to every child, not just the focused one** (ADR 0016,
+  mirroring TurboVision's `TGroup::valid`). Every child is asked — the fold
+  is *not* short-circuiting `all()` — so two refusing children both get the
+  chance to post their own follow-up in the same pass, rather than the
+  second being skipped once the first has already refused:
+  ```rust
+  fn valid(&mut self, c: Command, ctx: &mut Context) -> bool {
+      self.children.iter_mut().fold(true, |ok, v| v.valid(c, ctx) && ok)
+  }
+  ```
+  A plain leaf's default (`true`) makes this a no-op for a `Group` of
+  ordinary controls; it matters once something inside can refuse (e.g. a
+  `Window`'s interior refusing `CM_CLOSE`, see [`window.md`](window.md)) —
+  and it composes through nesting the same way `set_focused` already does.
 - **Initial focus.** `Group::new` focuses the first `focusable` child, or `None`
   if there are none. A group with no focusable children ignores `Tab`.
 - **Posting.** `Context::post` queues an `Event::Command` only if the command is
@@ -107,6 +128,10 @@ impl Group {
 - **Interaction:** `Tab`/`BackTab` cycle focus among focusable children (skipping
   `StaticText`), wrapping at the ends; the focused child receives keys; a command
   a child posts appears in `Context` and (when the child ignores it) bubbles up.
+- **`valid` fan-out:** a `Group` of all-default children reports `valid` as
+  `true`; one refusing child makes the whole `Group` refuse, regardless of
+  which child is focused; every child is asked (not just the first refusal
+  short-circuiting) so a refusing child can still post its own follow-up.
 - **Render (snapshot):** a group of two `StaticText`s plus an overlapping child
   draws in z-order at the right offsets.
 - **Manual:** later, via the Phase 4 chrome demo.
@@ -118,6 +143,17 @@ impl Group {
   flag pushed by the owner via the new defaulted `View::set_focused`, which `Group`
   calls as focus moves (and forwards to its focused child). A richer draw context
   (theme/cursor too) is still open if a future need appears.
+- **`Modal` trait: removed**, not just resolved (ADR 0016). It briefly existed
+  to give `exec_view` something to run generically (`size` + `ends_on`); once
+  `Window` absorbed `Dialog` there was exactly one concrete type that ever
+  implemented it, so the trait added indirection with nothing left to
+  abstract over. `exec_view` now takes `&mut Window` directly — see
+  [`window.md`](window.md), [`app.md`](app.md).
+- **Scroll chrome and the `valid` veto: resolved** as two more defaulted
+  `View` methods, same shape as `drop_shadow`/`set_focused` — see ADR 0015,
+  ADR 0016, and [`window.md`](window.md)/[`desktop.md`](desktop.md) for where
+  they're actually consumed (`Window` hosts scroll chrome; `Window`/`Group`/
+  `Desktop` all implement `valid` fan-out or delegation).
 - **Integer view IDs** (ADR 0003) for targeted messages: not needed for bubbling
   or Tab traversal; add when a command must address a specific view.
 - **Cross-group Tab boundary**: focus currently wraps within a group; handing off

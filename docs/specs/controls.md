@@ -1,19 +1,19 @@
 # Module spec: `rvision::widgets` controls (Phase 5)
 
-- **Status:** Done
-- **Phase:** 5 (Dialogs & controls)
-- **Related ADRs:** 0003 (commands up / broadcasts down), 0004 (three-phase dispatch), 0005 (colour roles), 0008 (owner-relative coords + `Canvas`), 0010 (modal dialogs + focus-aware drawing)
+- **Status:** Done; `ListBox`'s scroll bar in progress (Draft) per ADR 0015
+- **Phase:** 5 (Dialogs & controls); scroll-protocol migration post-extraction
+- **Related ADRs:** 0003 (commands up / broadcasts down), 0004 (three-phase dispatch), 0005 (colour roles), 0008 (owner-relative coords + `Canvas`), 0010 (modal dialogs + focus-aware drawing), 0015 (scroll chrome per-view protocol)
 
 ## Purpose
 
-The focusable, content-bearing widgets that live **inside** a [`Dialog`](dialog.md):
+The focusable, content-bearing widgets that live **inside** a [`Window`](window.md):
 `Label`, `Button`, `InputLine`, `CheckBox`, `RadioButtons`, `ListBox`/`ListViewer`,
 and `ScrollBar`. Reusable, editor-agnostic. These are the counterpart to the
-Phase 4 chrome furniture (`Window`, `MenuBar`, …); together with `Dialog` they let
+Phase 4 chrome furniture (`Window`, `MenuBar`, …); together with `Window` they let
 an application ask the user a question.
 
-It is **not** the modal machinery (that is [`app::exec_view`](dialog.md)) and not
-the editor view (Phase 6).
+It is **not** the modal machinery (that is [`app::exec_view`](app.md), running a
+[`Window`](window.md)) and not the editor view (Phase 6).
 
 ## Focus-aware drawing (ADR 0010)
 
@@ -63,7 +63,9 @@ impl RadioButtons { pub fn new(bounds, labels, theme) -> Self; pub fn selected(&
 
 // --- ScrollBar + ListBox ---
 // A drawn position indicator (mouse drag: Phase 9). Vertical or horizontal
-// (Orientation); the editor draws both along its window frame in Phase 6.
+// (Orientation); a *host* (Window, FileDialog) draws and hit-tests one for
+// whichever child reports ScrollMetrics (ADR 0015) — a ScrollBar is never
+// wired directly to a specific widget type.
 pub struct ScrollBar { bounds, orientation, total, visible, pos, style }
 impl ScrollBar {
     pub fn new(bounds: Rect, style: Style) -> Self;            // vertical
@@ -77,7 +79,13 @@ impl ListBox {
     pub fn selected(&self) -> Option<usize>;
     pub fn selected_text(&self) -> Option<&str>;
 }
-impl View for ListBox { /* focusable; arrows/PgUp/PgDn/Home/End move, scrolls to keep selection in view */ }
+impl View for ListBox {
+    // focusable; arrows/PgUp/PgDn/Home/End move, scrolls to keep selection in view.
+    // No longer owns a ScrollBar (ADR 0015): reports scroll_metrics/accepts
+    // set_scroll instead — see Behaviour below.
+    fn scroll_metrics(&self) -> Option<ScrollMetrics>;   // vertical axis only
+    fn set_scroll(&mut self, offset: Point);             // sets `top`, clamped
+}
 ```
 
 ## Behaviour & invariants
@@ -101,7 +109,20 @@ impl View for ListBox { /* focusable; arrows/PgUp/PgDn/Home/End move, scrolls to
 - **ListBox.** Focusable; `Up`/`Down` move the selection by one, `PgUp`/`PgDn` by a
   page, `Home`/`End` to the ends; `top` scrolls so the selection is always visible;
   the selected row draws in `Selection`. An empty list has `selected() == None`.
-  Optional `ScrollBar` drawn on the right edge reflects `top`/len.
+  **Scroll chrome (ADR 0015):** `ListBox` no longer builds, draws, or
+  hit-tests its own `ScrollBar` — it reports `scroll_metrics()` as
+  `Some(ScrollMetrics { vertical: Some(AxisMetrics { total: items.len(),
+  visible: rows(), pos: top }), horizontal: None })` whenever it has more
+  rows than fit, `None` otherwise, and accepts `set_scroll(Point { y, .. })`
+  by clamping `y` into `0..=items.len().saturating_sub(rows())` and setting
+  `top` (not moving the selection — the same "pan without selecting" the old
+  wheel/bar handling already had). A `ListBox` used with no delegating owner
+  is left with **no fallback scroll bar of its own** — the one production
+  call site ([`FileDialog`](window.md)) gains a host, so this has no live
+  consequence today, but it is a real trade-off for a bare future use (see
+  ADR 0015's Consequences). The wheel (`ScrollUp`/`ScrollDown`) still pans
+  `top` directly inside `ListBox`'s own `handle_event` — only the *bar*
+  (build/draw/hit-test) moves to the host.
 - All controls clip to their canvas (ADR 0008) and degrade without panic for tiny
   bounds and empty content.
 
@@ -111,18 +132,24 @@ impl View for ListBox { /* focusable; arrows/PgUp/PgDn/Home/End move, scrolls to
 - `view::{View, Group, Context}`, `command::{Command, CommandSet}`, `event` types.
 - `unicode-segmentation` for grapheme navigation in `InputLine` (shared with the
   editor's text model).
-- Controls never reference one another: they post via `Context`; the `Dialog`'s
-  `Group` routes and lays them out.
+- Controls never reference one another: they post via `Context`; a `Window`'s
+  `Group` interior routes and lays them out.
 
 ## Test plan (write these first)
 
 - **Logic:** button command/default accessors; input-line insert/delete/cursor
   moves and scroll; checkbox toggle; radio selection wrap; list selection +
   scroll-to-keep-visible; grapheme handling for a wide/combining char in the input.
+  `ListBox::scroll_metrics` is `None` under a page, `Some` with the right
+  `total`/`visible`/`pos` once it overflows; `set_scroll` clamps and moves
+  `top` without touching `selected`.
 - **Render (snapshot):** focused vs unfocused button; an input line with caret;
-  checkbox checked/unchecked; radio group; a list with a selection scrolled.
+  checkbox checked/unchecked; radio group; a list with a selection scrolled
+  (no bar of its own — rendered bare; a hosted snapshot lives in
+  [`window.md`](window.md)'s test plan).
 - **Interaction (scripted events):** button posts on Enter/Space, disabled does
-  not; tab moves the focus flag (in `Group`); list arrows scroll.
+  not; tab moves the focus flag (in `Group`); list arrows scroll; the wheel
+  still scrolls a bare `ListBox` directly.
 - **Manual:** the `dialogs` example (Phase 5) on a real terminal.
 
 ## Open questions
@@ -130,4 +157,4 @@ impl View for ListBox { /* focusable; arrows/PgUp/PgDn/Home/End move, scrolls to
 - Hot-key underline markup (`~X~`) and Label→control focus links: need view IDs;
   deferred (same family as `view.md`'s ID deferral).
 - Per-dialog command disabling (greying an OK button until valid) — see
-  [`dialog.md`](dialog.md) open questions.
+  [`window.md`](window.md) open questions.

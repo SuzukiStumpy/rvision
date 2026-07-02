@@ -23,6 +23,10 @@ pub struct Shell { menu_bar: MenuBar, desktop: Desktop, status_line: StatusLine,
 impl Shell {
     pub fn new(size: Size, menu_bar: MenuBar, desktop: Desktop, status_line: StatusLine) -> Self;
     pub fn menu_is_open(&self) -> bool;
+    // So application code can dynamically open/close/hide/show desktop
+    // windows (ADR 0016) — Shell owns the Desktop by value, so this is the
+    // only way in from outside the view tree.
+    pub fn desktop_mut(&mut self) -> &mut Desktop;
 }
 impl View for Shell { /* draws all four, routes events (below) */ }
 ```
@@ -72,7 +76,10 @@ impl View for Shell { /* draws all four, routes events (below) */ }
 
 ## Open questions
 
-- **Mouse behaviour** (click-to-open menus, click-outside-to-close, drag) — Phase 9.
-- **`exec_view` reconciliation.** The Phase 5 modal loop now exists
-  ([`dialog.md`](dialog.md)), so the pull-down *could* become a modal view; left as
-  a later cleanup — the shell's layout/overlay and the `MenuBar` data are unchanged.
+- **Mouse behaviour** (click-to-open menus, click-outside-to-close) — the
+  desktop's own drag/resize/click-to-front now exist
+  ([`desktop.md`](desktop.md)); the menu bar's own click handling is still
+  open.
+- **`exec_view` reconciliation.** The modal loop now runs any `Window`
+  ([`window.md`](window.md)), so the pull-down *could* become one; left as a
+  later cleanup — the shell's layout/overlay and the `MenuBar` data are unchanged.
