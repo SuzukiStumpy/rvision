@@ -334,7 +334,8 @@ impl Desktop {
             Some(window) => window.bounds(),
             None => return EventResult::Ignored,
         };
-        let local = mouse.pos.offset(-bounds.origin().x, -bounds.origin().y);
+        let origin = bounds.origin();
+        let local = mouse.pos.offset(-origin.x, -origin.y);
 
         if matches!(mouse.kind, MouseKind::Down(MouseButton::Left))
             && self.start_session_if_applicable(id, local, mouse.pos)
@@ -347,7 +348,9 @@ impl Desktop {
             ..mouse
         };
         match self.window_mut(id) {
-            Some(window) => window.handle_event(&Event::Mouse(translated), ctx),
+            Some(window) => ctx.translated(origin.x, origin.y, |ctx| {
+                window.handle_event(&Event::Mouse(translated), ctx)
+            }),
             None => EventResult::Ignored,
         }
     }
@@ -1055,5 +1058,54 @@ mod tests {
             desk.window(id).unwrap().bounds() == rect(2, 1, 10, 5),
             "the click acted on the glyph, not a drag"
         );
+    }
+
+    // --- Context menu anchor propagation (ADR 0019) ---
+
+    /// An interior that offers a context menu anchored at its own local
+    /// right-click position.
+    struct Offerer;
+
+    impl View for Offerer {
+        fn bounds(&self) -> Rect {
+            rect(0, 0, 100, 100)
+        }
+        fn draw(&self, _canvas: &mut Canvas) {}
+        fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
+            if let Event::Mouse(mouse) = event {
+                if mouse.kind == MouseKind::Down(MouseButton::Right) {
+                    ctx.open_context_menu(crate::widgets::Menu::new("M", vec![]), mouse.pos);
+                    return EventResult::Consumed;
+                }
+            }
+            EventResult::Ignored
+        }
+    }
+
+    #[test]
+    fn a_context_menu_request_from_a_window_interior_resolves_to_desktop_coordinates() {
+        // The window sits at (5, 2), sized 10x5; its interior (inset one cell
+        // for the border on each side) spans desktop-absolute (6, 3)..(14, 6).
+        // A right-click at desktop (10, 4) lands inside it, at interior-local
+        // (4, 1); Desktop must translate the request back out to desktop
+        // coordinates (10, 4), proving the offset composes correctly across a
+        // real Window, not just a synthetic offset.
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        desk.open(Window::new(
+            rect(5, 2, 10, 5),
+            "W",
+            &Theme::default(),
+            Box::new(Offerer),
+        ));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let right_click = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Right),
+            pos: Point::new(10, 4),
+            modifiers: Modifiers::NONE,
+        });
+        desk.handle_event(&right_click, &mut ctx);
+        let req = ctx.take_context_menu_request().unwrap();
+        assert_eq!(req.at, Point::new(10, 4));
     }
 }

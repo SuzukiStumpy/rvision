@@ -327,7 +327,7 @@ fn main() -> io::Result<()> {
         theme.style(Role::StatusKey),
     );
 
-    let shell = Shell::new(size, menu_bar, desktop, status);
+    let shell = Shell::new(size, menu_bar, desktop, status, &theme);
     let mut demo = Mdi {
         shell,
         commands: CommandSet::new(),

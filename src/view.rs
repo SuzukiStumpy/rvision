@@ -17,6 +17,7 @@ use crate::color::Style;
 use crate::command::{Command, CommandSet};
 use crate::event::{Event, EventResult, KeyCode, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect};
+use crate::widgets::Menu;
 
 /// One node of the UI tree.
 ///
@@ -136,6 +137,19 @@ pub struct AxisMetrics {
     pub pos: usize,
 }
 
+/// A pending request to open a context menu, made via
+/// [`Context::open_context_menu`] and drained via
+/// [`Context::take_context_menu_request`] by whoever owns the overlay
+/// (`Shell`, ADR 0019).
+pub struct ContextMenuRequest {
+    /// The menu to show.
+    pub menu: Menu,
+    /// Where to anchor it, in true screen coordinates — already resolved
+    /// through however many nested [`Context::translated`] scopes stood
+    /// between the requesting view and the screen.
+    pub at: Point,
+}
+
 /// A handler's outbound channel: how a view posts commands and queries command
 /// state without holding a reference to anyone (ADR 0003).
 ///
@@ -145,6 +159,11 @@ pub struct AxisMetrics {
 pub struct Context<'a> {
     posted: Vec<Event>,
     commands: &'a CommandSet,
+    /// The local-to-screen offset accumulated so far by nested
+    /// [`translated`](Self::translated) scopes (ADR 0019) — zero at the
+    /// screen's own top level.
+    offset: Point,
+    context_menu_request: Option<ContextMenuRequest>,
 }
 
 impl<'a> Context<'a> {
@@ -153,6 +172,8 @@ impl<'a> Context<'a> {
         Self {
             posted: Vec::new(),
             commands,
+            offset: Point::default(),
+            context_menu_request: None,
         }
     }
 
@@ -175,6 +196,14 @@ impl<'a> Context<'a> {
         self.commands.is_enabled(command)
     }
 
+    /// The current command-enable state, e.g. to snapshot a gate at
+    /// construction time (a [`ContextMenu`](crate::widgets::ContextMenu) built
+    /// on demand does this, mirroring how a statically-held widget is instead
+    /// pushed one via `sync_enabled`).
+    pub fn commands(&self) -> &CommandSet {
+        self.commands
+    }
+
     /// The events posted so far during this dispatch.
     pub fn posted(&self) -> &[Event] {
         &self.posted
@@ -183,6 +212,43 @@ impl<'a> Context<'a> {
     /// Takes the posted events, leaving the queue empty.
     pub fn take_posted(&mut self) -> Vec<Event> {
         std::mem::take(&mut self.posted)
+    }
+
+    /// Runs `f` with this context's accumulated offset increased by `(dx,
+    /// dy)` for the duration of the call, then restores it — wraps one step
+    /// of a translate-and-recurse positional dispatch (`Group`, `Desktop`,
+    /// `Window`, `Shell`) so that an [`open_context_menu`](Self::open_context_menu)
+    /// call made by a view nested arbitrarily deep resolves to true screen
+    /// coordinates, without any intermediate container needing to know a
+    /// context menu exists (ADR 0019).
+    ///
+    /// `(dx, dy)` is the amount that converts the child's local coordinates
+    /// back to this scope's — i.e. the child's `bounds.origin()` itself, the
+    /// *positive* of what a caller separately subtracts to compute the
+    /// child-local `MouseEvent.pos` it dispatches.
+    pub fn translated<T>(&mut self, dx: i16, dy: i16, f: impl FnOnce(&mut Self) -> T) -> T {
+        let previous = self.offset;
+        self.offset = self.offset.offset(dx, dy);
+        let result = f(self);
+        self.offset = previous;
+        result
+    }
+
+    /// Requests a context menu showing `menu`'s items, anchored at `at` — in
+    /// the caller's own local coordinates, resolved here to true screen
+    /// coordinates using the offset accumulated by any enclosing
+    /// [`translated`](Self::translated) scopes (ADR 0019). Replaces any
+    /// request already pending from earlier in this same dispatch.
+    pub fn open_context_menu(&mut self, menu: Menu, at: Point) {
+        self.context_menu_request = Some(ContextMenuRequest {
+            menu,
+            at: at.offset(self.offset.x, self.offset.y),
+        });
+    }
+
+    /// Takes the pending context-menu request, if any, leaving it clear.
+    pub fn take_context_menu_request(&mut self) -> Option<ContextMenuRequest> {
+        self.context_menu_request.take()
     }
 }
 
@@ -260,11 +326,15 @@ impl Group {
                 {
                     self.set_focus(i);
                 }
+                let origin = bounds.origin();
                 let local = MouseEvent {
-                    pos: mouse.pos.offset(-bounds.origin().x, -bounds.origin().y),
+                    pos: mouse.pos.offset(-origin.x, -origin.y),
                     ..mouse
                 };
-                return self.children[i].handle_event(&Event::Mouse(local), ctx);
+                let children = &mut self.children;
+                return ctx.translated(origin.x, origin.y, |ctx| {
+                    children[i].handle_event(&Event::Mouse(local), ctx)
+                });
             }
         }
         EventResult::Ignored
@@ -401,6 +471,7 @@ mod tests {
     use crate::command::{CM_CANCEL, CM_OK};
     use crate::event::{KeyEvent, Modifiers, MouseButton, MouseKind};
     use crate::geometry::Size;
+    use crate::widgets::Menu;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -483,6 +554,37 @@ mod tests {
         Event::Key(KeyEvent::new(code, Modifiers::NONE))
     }
 
+    fn right_click_at(x: i16, y: i16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Right),
+            pos: Point::new(x, y),
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    /// A leaf that offers a context menu, anchored at whatever local position
+    /// a right-click reaches it at, on the same event that triggers it
+    /// (ADR 0019).
+    struct Offerer {
+        bounds: Rect,
+    }
+
+    impl View for Offerer {
+        fn bounds(&self) -> Rect {
+            self.bounds
+        }
+        fn draw(&self, _canvas: &mut Canvas) {}
+        fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
+            if let Event::Mouse(mouse) = event {
+                if mouse.kind == MouseKind::Down(MouseButton::Right) {
+                    ctx.open_context_menu(Menu::new("M", vec![]), mouse.pos);
+                    return EventResult::Consumed;
+                }
+            }
+            EventResult::Ignored
+        }
+    }
+
     // --- StaticText (tracer bullet) ---
 
     #[test]
@@ -553,6 +655,25 @@ mod tests {
         let result = group.handle_event(&mouse_down_at(15, 8), &mut ctx);
         assert_eq!(result, EventResult::Ignored);
         assert!(log.borrow().is_empty());
+    }
+
+    #[test]
+    fn a_context_menu_request_from_a_child_resolves_to_screen_coordinates() {
+        // The child sits at (10, 1); it offers a menu anchored at its own
+        // local (2, 3). Group must translate that back out through the same
+        // offset it applied on the way in (ADR 0019), so the request Group's
+        // caller sees is in Group's own coordinate space: (12, 4).
+        let mut group = Group::new(
+            rect(0, 0, 20, 10),
+            vec![Box::new(Offerer {
+                bounds: rect(10, 1, 5, 5),
+            })],
+        );
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        group.handle_event(&right_click_at(12, 4), &mut ctx);
+        let req = ctx.take_context_menu_request().unwrap();
+        assert_eq!(req.at, Point::new(12, 4));
     }
 
     #[test]
@@ -1100,5 +1221,99 @@ mod tests {
             vec![CM_OK],
             "the second child was asked too, not skipped"
         );
+    }
+
+    // --- Context: offset accumulator & context-menu requests (ADR 0019) ---
+
+    fn probe_menu() -> Menu {
+        Menu::new("Ctx", vec![])
+    }
+
+    #[test]
+    fn open_context_menu_with_no_offset_resolves_to_the_given_point() {
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        ctx.open_context_menu(probe_menu(), Point::new(5, 3));
+        let req = ctx.take_context_menu_request().unwrap();
+        assert_eq!(req.at, Point::new(5, 3));
+    }
+
+    #[test]
+    fn translated_shifts_a_request_made_inside_it() {
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        ctx.translated(10, 2, |ctx| {
+            ctx.open_context_menu(probe_menu(), Point::new(1, 1));
+        });
+        let req = ctx.take_context_menu_request().unwrap();
+        assert_eq!(
+            req.at,
+            Point::new(11, 3),
+            "the local point is shifted by the pushed offset"
+        );
+    }
+
+    #[test]
+    fn nested_translated_scopes_compose() {
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        ctx.translated(10, 2, |ctx| {
+            ctx.translated(3, 1, |ctx| {
+                ctx.open_context_menu(probe_menu(), Point::new(0, 0));
+            });
+        });
+        let req = ctx.take_context_menu_request().unwrap();
+        assert_eq!(
+            req.at,
+            Point::new(13, 3),
+            "nested offsets add up, screen coordinates regardless of depth"
+        );
+    }
+
+    #[test]
+    fn translated_restores_the_previous_offset_after_returning() {
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        ctx.translated(10, 2, |ctx| {
+            ctx.open_context_menu(probe_menu(), Point::new(0, 0));
+        });
+        ctx.take_context_menu_request(); // drain the first request
+        // A second request made outside any `translated` scope is unshifted,
+        // proving the offset didn't leak past the closure that pushed it.
+        ctx.open_context_menu(probe_menu(), Point::new(4, 4));
+        let req = ctx.take_context_menu_request().unwrap();
+        assert_eq!(req.at, Point::new(4, 4));
+    }
+
+    #[test]
+    fn take_context_menu_request_clears_the_pending_request() {
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(ctx.take_context_menu_request().is_none());
+        ctx.open_context_menu(probe_menu(), Point::new(1, 1));
+        assert!(ctx.take_context_menu_request().is_some());
+        assert!(
+            ctx.take_context_menu_request().is_none(),
+            "taking clears the pending request"
+        );
+    }
+
+    #[test]
+    fn a_later_request_replaces_an_earlier_one() {
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        ctx.open_context_menu(probe_menu(), Point::new(1, 1));
+        ctx.open_context_menu(probe_menu(), Point::new(9, 9));
+        let req = ctx.take_context_menu_request().unwrap();
+        assert_eq!(req.at, Point::new(9, 9), "the later request wins");
+    }
+
+    #[test]
+    fn commands_accessor_exposes_the_same_enabled_state() {
+        let mut cs = CommandSet::new();
+        cs.disable(CM_OK);
+        let ctx = Context::new(&cs);
+        assert!(!ctx.commands().is_enabled(CM_OK));
+        assert!(ctx.commands().is_enabled(CM_CANCEL));
     }
 }

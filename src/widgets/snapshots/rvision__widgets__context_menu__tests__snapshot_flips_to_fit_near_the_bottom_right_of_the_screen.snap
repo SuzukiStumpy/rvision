@@ -1,0 +1,15 @@
+---
+source: src/widgets/context_menu.rs
+assertion_line: 636
+expression: "render(&m, small)"
+---
+                    
+                    
+                    
+                    
+                    
+                    
+       ┌───────────┐
+       │ Copy      │
+       │ Export  ▸ │
+       └───────────┘

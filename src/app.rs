@@ -14,10 +14,11 @@ use crate::backend::{Backend, EventSource};
 use crate::buffer::Buffer;
 use crate::canvas::Canvas;
 use crate::command::{CM_QUIT, Command, CommandSet};
-use crate::event::{Event, EventResult, MouseEvent};
+use crate::event::{Event, EventResult, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect, Size};
+use crate::theme::Theme;
 use crate::view::{Context, View};
-use crate::widgets::{Desktop, MenuBar, Placement, StatusLine, Window};
+use crate::widgets::{ContextMenu, Desktop, MenuBar, Placement, StatusLine, Window};
 use std::collections::VecDeque;
 use std::io;
 use std::time::Duration;
@@ -366,6 +367,16 @@ pub struct Shell {
     desktop: Desktop,
     status_line: StatusLine,
     size: Size,
+    /// Kept solely to build a [`ContextMenu`] on demand (ADR 0019) — unlike
+    /// the three chrome pieces above, a context menu doesn't exist until a
+    /// view requests one at runtime, so there is no upfront construction
+    /// site to resolve its styles from a theme the way `MenuBar::new` etc.
+    /// already do.
+    theme: Theme,
+    /// The open context menu, if any (ADR 0019). Mirrors `MenuBar`'s own
+    /// open pull-down: first refusal on every key/mouse event while `Some`,
+    /// drawn as a full-frame overlay last, after the menu bar's own.
+    context_menu: Option<ContextMenu>,
 }
 
 /// The three chrome regions for a terminal of `size`: the menu-bar row, the
@@ -388,13 +399,23 @@ fn regions(size: Size) -> Regions {
 
 impl Shell {
     /// Assembles a shell for a terminal of `size` from its three chrome pieces,
-    /// positioning each to the matching region.
-    pub fn new(size: Size, menu_bar: MenuBar, desktop: Desktop, status_line: StatusLine) -> Self {
+    /// positioning each to the matching region. `theme` is kept to build a
+    /// [`ContextMenu`] on demand (ADR 0019); the three chrome pieces have
+    /// already resolved their own styles from it.
+    pub fn new(
+        size: Size,
+        menu_bar: MenuBar,
+        desktop: Desktop,
+        status_line: StatusLine,
+        theme: &Theme,
+    ) -> Self {
         let mut shell = Self {
             menu_bar,
             desktop,
             status_line,
             size,
+            theme: theme.clone(),
+            context_menu: None,
         };
         shell.relayout(size);
         shell
@@ -422,7 +443,16 @@ impl Shell {
     }
 
     /// Three-pass key routing (ADR 0009): menu bar → active window → status line.
+    /// An open context menu takes absolute priority over all three, exactly
+    /// mirroring the menu bar's own open-pull-down modality (ADR 0019).
     fn handle_key(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
+        if let Some(menu) = &mut self.context_menu {
+            let result = menu.handle_event(event, self.size, ctx);
+            if menu.is_closed() {
+                self.context_menu = None;
+            }
+            return result;
+        }
         self.menu_bar
             .handle_event(event, ctx)
             .or_else(|| self.desktop.handle_event(event, ctx))
@@ -433,32 +463,61 @@ impl Shell {
     /// coordinates. (Behaviour inside each region is mostly Phase 9; the seam is
     /// here from the start — ADR 0007.)
     ///
-    /// **An open pull-down is the exception.** It draws as a full-frame overlay
-    /// below the bar's own one-row bounds (ADR 0009), so the region carve-up
-    /// below would hand a click on an item to the desktop underneath it instead
-    /// — the same "claim everything while open" modality `handle_key` already
-    /// gives the bar for keys. `MenuBar::handle_mouse` expects screen
-    /// coordinates (the space it and its overlay draw in), so this is the one
-    /// case that skips the region-local translation entirely.
+    /// **An open pull-down or context menu is the exception.** Both draw as a
+    /// full-frame overlay below the bar's own one-row bounds (ADR 0009), so
+    /// the region carve-up below would hand a click on an item to the desktop
+    /// underneath it instead — the same "claim everything while open"
+    /// modality `handle_key` already gives them for keys. A fresh right-click
+    /// while a context menu is open always supersedes it, though: closing it
+    /// first and falling through to ordinary dispatch lets whatever sits
+    /// under the new point offer a fresh one in the same step (ADR 0019).
     fn handle_mouse(&mut self, mouse: MouseEvent, ctx: &mut Context) -> EventResult {
-        if self.menu_bar.is_open() {
-            return self.menu_bar.handle_event(&Event::Mouse(mouse), ctx);
-        }
-        let r = regions(self.size);
-        for (region, target) in [
-            (r.menu, &mut self.menu_bar as &mut dyn View),
-            (r.status, &mut self.status_line as &mut dyn View),
-            (r.desktop, &mut self.desktop as &mut dyn View),
-        ] {
-            if region.contains(mouse.pos) {
-                let local = MouseEvent {
-                    pos: mouse.pos.offset(-region.origin().x, -region.origin().y),
-                    ..mouse
-                };
-                return target.handle_event(&Event::Mouse(local), ctx);
+        if let Some(menu) = &mut self.context_menu {
+            if matches!(mouse.kind, MouseKind::Down(MouseButton::Right)) {
+                self.context_menu = None;
+            } else {
+                let result = menu.handle_event(&Event::Mouse(mouse), self.size, ctx);
+                if menu.is_closed() {
+                    self.context_menu = None;
+                }
+                return result;
             }
         }
-        EventResult::Ignored
+
+        let result = if self.menu_bar.is_open() {
+            self.menu_bar.handle_event(&Event::Mouse(mouse), ctx)
+        } else {
+            let mut result = EventResult::Ignored;
+            let r = regions(self.size);
+            for (region, target) in [
+                (r.menu, &mut self.menu_bar as &mut dyn View),
+                (r.status, &mut self.status_line as &mut dyn View),
+                (r.desktop, &mut self.desktop as &mut dyn View),
+            ] {
+                if region.contains(mouse.pos) {
+                    let origin = region.origin();
+                    let local = MouseEvent {
+                        pos: mouse.pos.offset(-origin.x, -origin.y),
+                        ..mouse
+                    };
+                    result = ctx.translated(origin.x, origin.y, |ctx| {
+                        target.handle_event(&Event::Mouse(local), ctx)
+                    });
+                    break;
+                }
+            }
+            result
+        };
+
+        if let Some(req) = ctx.take_context_menu_request() {
+            self.context_menu = Some(ContextMenu::new(
+                req.menu,
+                req.at,
+                &self.theme,
+                ctx.commands(),
+            ));
+        }
+        result
     }
 }
 
@@ -475,8 +534,13 @@ impl View for Shell {
         self.status_line.draw(&mut canvas.child(r.status));
         self.menu_bar.draw(&mut canvas.child(r.menu));
         // The open pull-down is the last thing drawn, over the whole frame, so it
-        // sits on top of the desktop below the bar (ADR 0009).
+        // sits on top of the desktop below the bar (ADR 0009). An open context
+        // menu draws after that, so it stacks on top on the rare occasion both
+        // are open (ADR 0019).
         self.menu_bar.draw_overlay(canvas);
+        if let Some(menu) = &self.context_menu {
+            menu.draw_overlay(canvas);
+        }
     }
 
     fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
@@ -895,7 +959,7 @@ mod tests {
             theme.style(Role::StatusBar),
             theme.style(Role::StatusKey),
         );
-        Shell::new(size, menu_bar, desktop, status)
+        Shell::new(size, menu_bar, desktop, status, &theme)
     }
 
     fn no_log() -> Rc<RefCell<Vec<Command>>> {
@@ -1058,7 +1122,7 @@ mod tests {
             theme.style(Role::StatusBar),
             theme.style(Role::StatusKey),
         );
-        let mut shell = Shell::new(size, menu_bar, desktop, status);
+        let mut shell = Shell::new(size, menu_bar, desktop, status, &theme);
 
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
@@ -1069,6 +1133,154 @@ mod tests {
         assert!(
             shell.valid(CM_OK, &mut ctx),
             "the window only refuses CM_QUIT, so an unrelated command passes"
+        );
+    }
+
+    // --- Context menu anchor propagation (ADR 0019) ---
+
+    /// An interior that offers a context menu anchored at its own local
+    /// right-click position.
+    struct Offerer;
+
+    impl View for Offerer {
+        fn bounds(&self) -> Rect {
+            full(Size::new(100, 100))
+        }
+        fn draw(&self, _canvas: &mut Canvas) {}
+        fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
+            if let Event::Mouse(mouse) = event {
+                if mouse.kind == MouseKind::Down(MouseButton::Right) {
+                    let menu = Menu::new("M", vec![MenuItem::new("Ping", Command(CM_USER + 30))]);
+                    ctx.open_context_menu(menu, mouse.pos);
+                    return EventResult::Consumed;
+                }
+            }
+            EventResult::Ignored
+        }
+    }
+
+    /// A shell with one window (at (2, 1), sized 20x8) whose interior offers
+    /// a one-item context menu on right-click, anchored at the click.
+    fn shell_with_offerer(size: Size) -> Shell {
+        let theme = Theme::default();
+        let menu_bar = MenuBar::new(full(Size::new(size.width, 1)), vec![], &theme);
+        let mut desktop = Desktop::new(
+            Rect::from_origin_size(Point::new(0, 1), Size::new(size.width, size.height - 2)),
+            Cell::default(),
+        );
+        desktop.open(Window::new(
+            Rect::from_origin_size(Point::new(2, 1), Size::new(20, 8)),
+            "W",
+            &theme,
+            Box::new(Offerer),
+        ));
+        let status = StatusLine::new(
+            Rect::from_origin_size(Point::new(0, size.height - 1), Size::new(size.width, 1)),
+            vec![],
+            theme.style(Role::StatusBar),
+            theme.style(Role::StatusKey),
+        );
+        Shell::new(size, menu_bar, desktop, status, &theme)
+    }
+
+    fn right_click_at(x: i16, y: i16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Right),
+            pos: Point::new(x, y),
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    fn left_click_at(x: i16, y: i16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(x, y),
+            modifiers: Modifiers::NONE,
+        })
+    }
+
+    /// Whether a box-drawing corner sits at `(x, y)` in `shell`'s drawn
+    /// frame — the only externally observable sign a `ContextMenu` is open,
+    /// since `Shell.context_menu` has no public accessor (it is
+    /// Shell-internal, like `MenuBar`'s own open pull-down).
+    fn corner_at(shell: &Shell, size: Size, x: i16, y: i16) -> bool {
+        let mut frame = Buffer::new(size);
+        let mut canvas = Canvas::new(&mut frame);
+        shell.draw(&mut canvas);
+        frame.get(Point::new(x, y)).unwrap().grapheme().to_string() == "┌"
+    }
+
+    #[test]
+    fn a_right_click_nested_inside_a_window_inside_a_desktop_resolves_to_true_screen_coordinates() {
+        // The regression this feature exists to prove: a request from a view
+        // nested Shell -> Desktop -> Window -> interior must resolve to the
+        // click's actual screen position, not some partially-translated
+        // local point (ADR 0019). Window at (2, 1) sized 20x8; its interior
+        // (inset one cell each side) spans screen-absolute (3, 2)..(21, 8).
+        let size = Size::new(40, 10);
+        let mut shell = shell_with_offerer(size);
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        // Screen (10, 5): inside the desktop region (rows 1..8), inside the
+        // window, inside its interior.
+        shell.handle_event(&right_click_at(10, 5), &mut ctx);
+        assert!(
+            corner_at(&shell, size, 10, 5),
+            "the context menu's box is anchored at the click's true screen \
+             position, not a partially-translated local one"
+        );
+    }
+
+    #[test]
+    fn clicking_the_offered_item_posts_its_command_and_closes_the_menu() {
+        let size = Size::new(40, 10);
+        let mut shell = shell_with_offerer(size);
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        shell.handle_event(&right_click_at(10, 5), &mut ctx);
+        assert!(corner_at(&shell, size, 10, 5));
+
+        // The box is 2 rows tall (border, one item, border); its item row
+        // sits one below the anchor, starting two columns in.
+        shell.handle_event(&left_click_at(12, 6), &mut ctx);
+        assert_eq!(ctx.posted(), &[Event::Command(Command(CM_USER + 30))]);
+        assert!(
+            !corner_at(&shell, size, 10, 5),
+            "choosing the item closed the menu"
+        );
+    }
+
+    #[test]
+    fn clicking_elsewhere_dismisses_the_menu_without_reaching_the_window() {
+        let size = Size::new(40, 10);
+        let mut shell = shell_with_offerer(size);
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        shell.handle_event(&right_click_at(10, 5), &mut ctx);
+        assert!(corner_at(&shell, size, 10, 5));
+
+        shell.handle_event(&left_click_at(30, 5), &mut ctx);
+        assert!(
+            !corner_at(&shell, size, 10, 5),
+            "a click off the box dismisses it"
+        );
+        assert!(ctx.posted().is_empty());
+    }
+
+    #[test]
+    fn a_second_right_click_replaces_the_open_menu() {
+        let size = Size::new(40, 10);
+        let mut shell = shell_with_offerer(size);
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        shell.handle_event(&right_click_at(10, 5), &mut ctx);
+        assert!(corner_at(&shell, size, 10, 5));
+
+        shell.handle_event(&right_click_at(20, 6), &mut ctx);
+        assert!(!corner_at(&shell, size, 10, 5), "the first menu is gone");
+        assert!(
+            corner_at(&shell, size, 20, 6),
+            "a fresh one opened at the new click"
         );
     }
 

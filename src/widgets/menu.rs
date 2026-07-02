@@ -22,7 +22,7 @@ use crate::view::{Context, View};
 /// The trailing glyph shown in place of a shortcut on a `Submenu` item,
 /// marking that choosing it opens another pull-down rather than posting a
 /// command (ADR 0018).
-const SUBMENU_MARK: &str = "▸";
+pub(crate) const SUBMENU_MARK: &str = "▸";
 
 /// What choosing a [`MenuItem`] does: post a command, or open a nested
 /// pull-down.
@@ -103,13 +103,18 @@ impl MenuItem {
         self
     }
 
+    /// The label text.
+    pub(crate) fn label(&self) -> &str {
+        &self.label
+    }
+
     /// The accelerator letter, if any.
-    fn hotkey(&self) -> Option<char> {
+    pub(crate) fn hotkey(&self) -> Option<char> {
         self.hotkey
     }
 
     /// The command this item posts, or `None` for a `Submenu` item.
-    fn command(&self) -> Option<Command> {
+    pub(crate) fn command(&self) -> Option<Command> {
         match self.action {
             MenuAction::Command(command) => Some(command),
             MenuAction::Submenu(_) => None,
@@ -117,7 +122,7 @@ impl MenuItem {
     }
 
     /// The nested menu this item opens, or `None` for a `Command` item.
-    fn submenu_ref(&self) -> Option<&Menu> {
+    pub(crate) fn submenu_ref(&self) -> Option<&Menu> {
         match &self.action {
             MenuAction::Submenu(menu) => Some(menu),
             MenuAction::Command(_) => None,
@@ -126,8 +131,14 @@ impl MenuItem {
 
     /// Whether this item is currently enabled, per its `gate` (`None` always
     /// reads as enabled — the default for a `Submenu` item).
-    fn enabled(&self, commands: &CommandSet) -> bool {
+    pub(crate) fn enabled(&self, commands: &CommandSet) -> bool {
         self.gate.is_none_or(|c| commands.is_enabled(c))
+    }
+
+    /// Whether this item opens a nested pull-down (a `Submenu` item) rather
+    /// than posting a command.
+    pub(crate) fn is_submenu(&self) -> bool {
+        self.submenu_ref().is_some()
     }
 }
 
@@ -161,6 +172,11 @@ impl Menu {
     /// The `Alt`-hot-key that opens this menu.
     fn hotkey(&self) -> Option<char> {
         self.hotkey
+    }
+
+    /// This menu's items, in order.
+    pub(crate) fn items(&self) -> &[MenuItem] {
+        &self.items
     }
 }
 
@@ -305,18 +321,7 @@ impl MenuBar {
             let area = if level == 0 {
                 self.pulldown_area(self.path[0], menu, screen_w)
             } else {
-                let parent_area = areas[level - 1];
-                let parent_highlight = self.path[level];
-                let box_w = self.pulldown_width(menu);
-                let box_h = menu.items.len() as i16 + 2;
-                let top = parent_area.origin().y + 1 + parent_highlight as i16;
-                let right_open_left = parent_area.origin().x + parent_area.width();
-                let left = if right_open_left + box_w <= screen_w {
-                    right_open_left
-                } else {
-                    (parent_area.origin().x - box_w).max(0)
-                };
-                Rect::from_origin_size(Point::new(left, top), Size::new(box_w, box_h))
+                cascade_area(areas[level - 1], self.path[level], menu, screen_w)
             };
             areas.push(area);
         }
@@ -333,24 +338,7 @@ impl MenuBar {
             return None;
         }
         let areas = self.level_areas(screen_w);
-        for level in (0..menus.len()).rev() {
-            let menu = menus[level];
-            if menu.items.is_empty() {
-                continue;
-            }
-            let area = areas[level];
-            let left = area.origin().x;
-            let box_w = area.width();
-            if pos.x <= left || pos.x >= left + box_w - 1 {
-                continue;
-            }
-            let first_row = area.origin().y + 1;
-            let row = pos.y - first_row;
-            if row >= 0 && (row as usize) < menu.items.len() {
-                return Some((level, row as usize));
-            }
-        }
-        None
+        hit_test(pos, &menus, &areas)
     }
 
     /// Whether item `idx` at `level` is already expanded — its submenu is
@@ -551,7 +539,7 @@ impl MenuBar {
     /// [`level_areas`](Self::level_areas); deeper levels anchor off it.
     fn pulldown_area(&self, index: usize, menu: &Menu, screen_w: i16) -> Rect {
         let starts = self.title_starts();
-        let box_w = self.pulldown_width(menu);
+        let box_w = pulldown_width(menu);
         let box_h = menu.items.len() as i16 + 2;
         let left = (starts[index] - 1).min(screen_w - box_w).max(0);
         Rect::from_origin_size(Point::new(left, 1), Size::new(box_w, box_h))
@@ -626,61 +614,14 @@ impl MenuBar {
         }
         let menus = self.open_menus();
         let areas = self.level_areas(canvas.size().width);
-        for (level, menu) in menus.iter().enumerate() {
-            if menu.items.is_empty() {
-                continue;
-            }
-            let area = areas[level];
-            let left = area.origin().x;
-            let box_w = area.width();
-            let highlight = self.path[level + 1];
-
-            canvas.fill(area, &Cell::blank(self.bar_style));
-            canvas.draw_box(area, self.bar_style);
-            for (i, item) in menu.items.iter().enumerate() {
-                let row = area.origin().y + 1 + i as i16;
-                let disabled = !item.enabled(&self.commands);
-                // A disabled item can't light up: it stays greyed even on the
-                // highlight row, so the whole line (fill included) reads as
-                // unavailable.
-                let style = if disabled {
-                    self.disabled_style
-                } else if i == highlight {
-                    self.selected_style
-                } else {
-                    self.bar_style
-                };
-                // Repaint the interior row so the highlight is a full-width bar.
-                let inner =
-                    Rect::from_origin_size(Point::new(left + 1, row), Size::new(box_w - 2, 1));
-                canvas.fill(inner, &Cell::blank(style));
-                if disabled {
-                    // No hot-key highlight either: a letter that can't be
-                    // pressed shouldn't be singled out.
-                    canvas.put_str(Point::new(left + 2, row), &item.label, style);
-                } else {
-                    self.put_hotkey_str(
-                        canvas,
-                        Point::new(left + 2, row),
-                        &item.label,
-                        style,
-                        item.hotkey(),
-                    );
-                }
-                match &item.action {
-                    MenuAction::Command(_) => {
-                        if let Some(shortcut) = &item.shortcut {
-                            let sx = left + box_w - 2 - shortcut.chars().count() as i16;
-                            canvas.put_str(Point::new(sx, row), shortcut, style);
-                        }
-                    }
-                    MenuAction::Submenu(_) => {
-                        let sx = left + box_w - 2 - SUBMENU_MARK.chars().count() as i16;
-                        canvas.put_str(Point::new(sx, row), SUBMENU_MARK, style);
-                    }
-                }
-            }
-        }
+        let highlights = &self.path[1..];
+        let styles = MenuStyles {
+            bar: self.bar_style,
+            selected: self.selected_style,
+            disabled: self.disabled_style,
+            hotkey_fg: self.hotkey_fg,
+        };
+        draw_cascade(canvas, &menus, &areas, highlights, &self.commands, styles);
     }
 
     /// Draws `text` at `at` in `style`, except its hot-key character (if any),
@@ -697,38 +638,199 @@ impl MenuBar {
         style: Style,
         hotkey: Option<char>,
     ) -> i16 {
-        let Some((pre, key, post)) = hotkey.and_then(|hk| split_at_hotkey(text, hk)) else {
-            return canvas.put_str(at, text, style);
-        };
-        let mut x = canvas.put_str(at, pre, style);
-        x = canvas.put_str(Point::new(x, at.y), key, style.fg(self.hotkey_fg));
-        canvas.put_str(Point::new(x, at.y), post, style)
+        draw_hotkey_str(canvas, at, text, style, hotkey, self.hotkey_fg)
     }
+}
 
-    /// The pull-down box width: widest "` label  trailer `" line (trailer being
-    /// a shortcut for a `Command` item or the cascade mark for a `Submenu`
-    /// item), plus borders.
-    fn pulldown_width(&self, menu: &Menu) -> i16 {
-        let label_w = menu
-            .items
-            .iter()
-            .map(|it| it.label.chars().count())
-            .max()
-            .unwrap_or(0);
-        let trailer_w = menu
-            .items
-            .iter()
-            .map(|it| match &it.action {
-                MenuAction::Command(_) => {
-                    it.shortcut.as_ref().map(|s| s.chars().count()).unwrap_or(0)
-                }
-                MenuAction::Submenu(_) => SUBMENU_MARK.chars().count(),
-            })
-            .max()
-            .unwrap_or(0);
-        let gap = if trailer_w > 0 { trailer_w + 2 } else { 0 };
-        // 1 leading + label + gap + 1 trailing, then +2 for the borders.
-        (1 + label_w + gap + 1 + 2) as i16
+/// The pull-down box width for `menu`: widest "` label  trailer `" line
+/// (trailer being a shortcut for a `Command` item or the cascade mark for a
+/// `Submenu` item), plus borders. A pure function of `menu` alone, shared by
+/// [`MenuBar`] and [`ContextMenu`](super::ContextMenu) — both cascade the
+/// same `Menu`/`MenuItem` boxes, just anchored differently (ADR 0019).
+pub(crate) fn pulldown_width(menu: &Menu) -> i16 {
+    let label_w = menu
+        .items()
+        .iter()
+        .map(|it| it.label().chars().count())
+        .max()
+        .unwrap_or(0);
+    let trailer_w = menu
+        .items()
+        .iter()
+        .map(|it| {
+            if it.is_submenu() {
+                SUBMENU_MARK.chars().count()
+            } else {
+                it.shortcut.as_ref().map(|s| s.chars().count()).unwrap_or(0)
+            }
+        })
+        .max()
+        .unwrap_or(0);
+    let gap = if trailer_w > 0 { trailer_w + 2 } else { 0 };
+    // 1 leading + label + gap + 1 trailing, then +2 for the borders.
+    (1 + label_w + gap + 1 + 2) as i16
+}
+
+/// The box (border included) for a level cascaded from `parent_area`, showing
+/// `menu`: to the right of the parent box, top-aligned with the row of the
+/// item at `parent_highlight` that opened it, flipping to the parent's left
+/// edge if it would run off the right of `screen_w` (ADR 0018). A pure
+/// function of its inputs — every level past the root cascades the same way
+/// regardless of what anchors the root, so this is shared by [`MenuBar`] and
+/// [`ContextMenu`](super::ContextMenu) (ADR 0019).
+pub(crate) fn cascade_area(
+    parent_area: Rect,
+    parent_highlight: usize,
+    menu: &Menu,
+    screen_w: i16,
+) -> Rect {
+    let box_w = pulldown_width(menu);
+    let box_h = menu.items().len() as i16 + 2;
+    let top = parent_area.origin().y + 1 + parent_highlight as i16;
+    let right_open_left = parent_area.origin().x + parent_area.width();
+    let left = if right_open_left + box_w <= screen_w {
+        right_open_left
+    } else {
+        (parent_area.origin().x - box_w).max(0)
+    };
+    Rect::from_origin_size(Point::new(left, top), Size::new(box_w, box_h))
+}
+
+/// The `(level, item index)` under `pos` (screen coordinates) among `menus`/
+/// `areas` (index-aligned, root first), tested **deepest first** so a point
+/// under two overlapping boxes resolves to the descendant, since it draws on
+/// top. `None` if `pos` is outside every box. Shared by [`MenuBar`] and
+/// [`ContextMenu`](super::ContextMenu) (ADR 0019).
+pub(crate) fn hit_test(pos: Point, menus: &[&Menu], areas: &[Rect]) -> Option<(usize, usize)> {
+    for level in (0..menus.len()).rev() {
+        let menu = menus[level];
+        if menu.items().is_empty() {
+            continue;
+        }
+        let area = areas[level];
+        let left = area.origin().x;
+        let box_w = area.width();
+        if pos.x <= left || pos.x >= left + box_w - 1 {
+            continue;
+        }
+        let first_row = area.origin().y + 1;
+        let row = pos.y - first_row;
+        if row >= 0 && (row as usize) < menu.items().len() {
+            return Some((level, row as usize));
+        }
+    }
+    None
+}
+
+/// The four styles a cascade box draws with: plain, highlighted, disabled,
+/// and the accelerator letter's foreground — resolved once from a [`Theme`]
+/// and shared by [`MenuBar`] and [`ContextMenu`](super::ContextMenu)
+/// (ADR 0019).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MenuStyles {
+    pub(crate) bar: Style,
+    pub(crate) selected: Style,
+    pub(crate) disabled: Style,
+    pub(crate) hotkey_fg: Color,
+}
+
+impl MenuStyles {
+    /// Resolves the four roles ([`Role::MenuBar`], [`Role::MenuSelected`],
+    /// [`Role::MenuDisabled`], [`Role::MenuHotkey`]) from `theme`.
+    pub(crate) fn from_theme(theme: &Theme) -> Self {
+        Self {
+            bar: theme.style(Role::MenuBar),
+            selected: theme.style(Role::MenuSelected),
+            disabled: theme.style(Role::MenuDisabled),
+            hotkey_fg: theme.style(Role::MenuHotkey).fg,
+        }
+    }
+}
+
+/// Draws `text` at `at` in `style`, except its hot-key character (if any),
+/// which is drawn with the foreground swapped to `hotkey_fg` while keeping
+/// `style`'s background and attributes. Returns the ending column, like
+/// [`Canvas::put_str`].
+pub(crate) fn draw_hotkey_str(
+    canvas: &mut Canvas,
+    at: Point,
+    text: &str,
+    style: Style,
+    hotkey: Option<char>,
+    hotkey_fg: Color,
+) -> i16 {
+    let Some((pre, key, post)) = hotkey.and_then(|hk| split_at_hotkey(text, hk)) else {
+        return canvas.put_str(at, text, style);
+    };
+    let mut x = canvas.put_str(at, pre, style);
+    x = canvas.put_str(Point::new(x, at.y), key, style.fg(hotkey_fg));
+    canvas.put_str(Point::new(x, at.y), post, style)
+}
+
+/// Draws every level of a cascade (root first) into `canvas`, given each
+/// level's `Menu`, screen `Rect`, and highlighted item index (all
+/// index-aligned), the live `commands` for item gating, and the resolved
+/// `styles`. Shared by [`MenuBar::draw_overlay`] and
+/// [`ContextMenu`](super::ContextMenu)'s own overlay draw — the only thing
+/// that differs between them is how level 0's box and highlight were
+/// computed (ADR 0019).
+pub(crate) fn draw_cascade(
+    canvas: &mut Canvas,
+    menus: &[&Menu],
+    areas: &[Rect],
+    highlights: &[usize],
+    commands: &CommandSet,
+    styles: MenuStyles,
+) {
+    for (level, menu) in menus.iter().enumerate() {
+        if menu.items().is_empty() {
+            continue;
+        }
+        let area = areas[level];
+        let left = area.origin().x;
+        let box_w = area.width();
+        let highlight = highlights[level];
+
+        canvas.fill(area, &Cell::blank(styles.bar));
+        canvas.draw_box(area, styles.bar);
+        for (i, item) in menu.items().iter().enumerate() {
+            let row = area.origin().y + 1 + i as i16;
+            let disabled = !item.enabled(commands);
+            // A disabled item can't light up: it stays greyed even on the
+            // highlight row, so the whole line (fill included) reads as
+            // unavailable.
+            let style = if disabled {
+                styles.disabled
+            } else if i == highlight {
+                styles.selected
+            } else {
+                styles.bar
+            };
+            // Repaint the interior row so the highlight is a full-width bar.
+            let inner = Rect::from_origin_size(Point::new(left + 1, row), Size::new(box_w - 2, 1));
+            canvas.fill(inner, &Cell::blank(style));
+            if disabled {
+                // No hot-key highlight either: a letter that can't be pressed
+                // shouldn't be singled out.
+                canvas.put_str(Point::new(left + 2, row), item.label(), style);
+            } else {
+                draw_hotkey_str(
+                    canvas,
+                    Point::new(left + 2, row),
+                    item.label(),
+                    style,
+                    item.hotkey(),
+                    styles.hotkey_fg,
+                );
+            }
+            if item.is_submenu() {
+                let sx = left + box_w - 2 - SUBMENU_MARK.chars().count() as i16;
+                canvas.put_str(Point::new(sx, row), SUBMENU_MARK, style);
+            } else if let Some(shortcut) = &item.shortcut {
+                let sx = left + box_w - 2 - shortcut.chars().count() as i16;
+                canvas.put_str(Point::new(sx, row), shortcut, style);
+            }
+        }
     }
 }
 

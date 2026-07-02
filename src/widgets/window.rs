@@ -503,11 +503,14 @@ impl View for Window {
                 // of a drag session.
                 let interior = self.interior_bounds();
                 if interior.contains(mouse.pos) {
+                    let origin = interior.origin();
                     let local = MouseEvent {
-                        pos: mouse.pos.offset(-interior.origin().x, -interior.origin().y),
+                        pos: mouse.pos.offset(-origin.x, -origin.y),
                         ..*mouse
                     };
-                    self.interior.handle_event(&Event::Mouse(local), ctx)
+                    ctx.translated(origin.x, origin.y, |ctx| {
+                        self.interior.handle_event(&Event::Mouse(local), ctx)
+                    })
                 } else {
                     EventResult::Ignored
                 }

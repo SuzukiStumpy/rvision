@@ -17,6 +17,7 @@
 mod background;
 mod button;
 mod check_box;
+mod context_menu;
 mod desktop;
 mod file_dialog;
 mod frame;
@@ -35,6 +36,7 @@ mod window;
 pub use background::Background;
 pub use button::Button;
 pub use check_box::CheckBox;
+pub(crate) use context_menu::ContextMenu;
 pub use desktop::{Desktop, WindowId};
 pub use file_dialog::{FileDialog, FileDialogResult};
 pub use frame::Frame;

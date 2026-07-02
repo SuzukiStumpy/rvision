@@ -8,6 +8,10 @@
 //!   `↑`/`↓` move the highlight, `Enter` chooses, `Esc` closes.
 //! - File ▸ Export cascades into a submenu (ADR 0018): `→` or `Enter` opens it,
 //!   `←` or `Esc` backs out one level without closing the bar.
+//! - Right-click inside the window opens a context menu, anchored at the
+//!   click (ADR 0019); it cascades and dismisses exactly like a pull-down's
+//!   submenu (`←`/`Esc` backs out one level, a click elsewhere or a fresh
+//!   right-click elsewhere dismisses/replaces it).
 //! - `Alt-X` (or File ▸ Exit) quits; the terminal is always restored, even on a
 //!   panic, thanks to the RAII backend (ADR 0001).
 //! - Resize the window: the menu bar, desktop, and status line relay out.
@@ -22,10 +26,10 @@ use rvision::cell::Cell;
 use rvision::color::Style;
 use rvision::command::{CM_QUIT, CM_USER, Command};
 use rvision::crossterm_backend::CrosstermBackend;
-use rvision::event::{KeyCode, KeyEvent, Modifiers};
+use rvision::event::{Event, EventResult, KeyCode, KeyEvent, Modifiers, MouseButton, MouseKind};
 use rvision::geometry::{Point, Rect, Size};
 use rvision::theme::{Role, Theme};
-use rvision::view::View;
+use rvision::view::{Context, View};
 use rvision::widgets::{Desktop, Menu, MenuBar, MenuItem, StatusItem, StatusLine, Window};
 
 // Application command ids, numbered from the framework/app boundary (ADR 0003).
@@ -41,6 +45,9 @@ const CM_FIND: Command = Command(CM_USER + 7);
 const CM_REPLACE: Command = Command(CM_USER + 8);
 const CM_EXPORT_PDF: Command = Command(CM_USER + 9);
 const CM_EXPORT_PNG: Command = Command(CM_USER + 10);
+const CM_WORD_COUNT: Command = Command(CM_USER + 11);
+const CM_ABOUT_RVISION: Command = Command(CM_USER + 12);
+const CM_ABOUT_EDIT: Command = Command(CM_USER + 13);
 
 fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
     Rect::from_origin_size(Point::new(x, y), Size::new(w, h))
@@ -64,11 +71,39 @@ impl View for Hint {
             "Empty document.",
             "",
             "Alt / F10   open a menu",
+            "Right-click open a context menu",
             "Alt-X       exit",
         ];
         for (row, line) in lines.iter().enumerate() {
             canvas.put_str(Point::new(1, row as i16 + 1), line, self.style);
         }
+    }
+
+    fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
+        let Event::Mouse(mouse) = event else {
+            return EventResult::Ignored;
+        };
+        if mouse.kind != MouseKind::Down(MouseButton::Right) {
+            return EventResult::Ignored;
+        }
+        let menu = Menu::new(
+            "Context",
+            vec![
+                MenuItem::new("Word Count", CM_WORD_COUNT),
+                MenuItem::submenu(
+                    "About",
+                    Menu::new(
+                        "About",
+                        vec![
+                            MenuItem::new("rvision...", CM_ABOUT_RVISION),
+                            MenuItem::new("edit...", CM_ABOUT_EDIT),
+                        ],
+                    ),
+                ),
+            ],
+        );
+        ctx.open_context_menu(menu, mouse.pos);
+        EventResult::Consumed
     }
 }
 
@@ -164,7 +199,7 @@ fn main() -> io::Result<()> {
         theme.style(Role::StatusKey),
     );
 
-    let shell = Shell::new(size, menu_bar, desktop, status);
+    let shell = Shell::new(size, menu_bar, desktop, status, &theme);
     let mut app = Application::new(backend).with_timeout(Duration::from_millis(250));
     let mut root = Root::new(Box::new(shell));
     app.run(&mut root)

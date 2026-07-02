@@ -46,10 +46,16 @@ need.
   level (ADR 0018, extending the ADR 0009 overlay). See
   [`docs/specs/menu.md`](specs/menu.md) and the `chrome` example's File ▸
   Export item.
-- **Right-click context menus.** A pull-down anchored at the pointer, populated
-  per context. Reuses the `Menu` overlay and its open/closed/modal state
-  machine; the trigger becomes a right-press hit-test rather than the menu bar.
-  Best explored *after* submenus — they share the nesting/anchoring machinery.
+- ~~**Right-click context menus.**~~ Landed: a pull-down anchored at the
+  pointer, populated per context. Reuses `Menu`/`MenuItem` and the ADR 0018
+  cascade rules unchanged (most of the cascade geometry/hit-testing/drawing
+  turned out to be shareable with `MenuBar` outright, as free functions in
+  `menu.rs`); the trigger is an ordinary right-click through the existing
+  positional dispatch, resolved to true screen coordinates via a small offset
+  accumulator added to `Context` (ADR 0019), so any nested view can request one
+  correctly anchored regardless of depth. See
+  [`docs/specs/context_menu.md`](specs/context_menu.md) and the `chrome`
+  example's right-click on the window interior.
 
 ## Now that `rvision` is standalone
 

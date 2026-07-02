@@ -1,0 +1,13 @@
+---
+source: src/widgets/context_menu.rs
+assertion_line: 669
+expression: "render(&m, SCREEN)"
+---
+                                        
+                                        
+  ┌───────────┐                         
+  │ Copy      │                         
+  │ Export  ▸ │┌─────┐                  
+  └───────────┘│ PDF │                  
+               │ PNG │                  
+               └─────┘
