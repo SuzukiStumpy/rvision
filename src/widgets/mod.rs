@@ -3,13 +3,13 @@
 //!
 //! - **Chrome (Phase 4):** a desktop backdrop, framed windows, a status line, and
 //!   a menu bar with pull-downs — the furniture, laid out and routed by
-//!   [`crate::app::Shell`] (ADR 0016).
+//!   [`crate::app::Shell`] (ADR 0009).
 //! - **Dialogs & controls (Phase 5):** [`Dialog`] (and [`MessageBox`],
 //!   [`FileDialog`]) run modally via
 //!   [`Application::exec_view`](crate::app::Application::exec_view), holding the
 //!   focusable controls [`Button`], [`Label`], [`InputLine`], [`CheckBox`],
 //!   [`RadioButtons`], [`ListBox`], and [`ScrollBar`]. Focus-aware drawing is the
-//!   `set_focused` push (ADR 0017).
+//!   `set_focused` push (ADR 0010).
 //!
 //! All are reusable and editor-agnostic; the editor view itself arrives in Phase 6.
 

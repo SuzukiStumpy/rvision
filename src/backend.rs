@@ -27,7 +27,7 @@ pub trait Backend {
     fn present(&mut self, frame: &Buffer) -> io::Result<()>;
 
     /// Copies `text` to the host's system clipboard, if the backend can reach it.
-    /// The real backend emits an OSC 52 escape (ADR 0021); the default is a no-op,
+    /// The real backend emits an OSC 52 escape (the editor's ADR 0021); the default is a no-op,
     /// so a backend with no terminal (or no clipboard) simply drops the request.
     fn set_clipboard(&mut self, text: &str) -> io::Result<()> {
         let _ = text;
@@ -66,7 +66,7 @@ impl TestBackend {
     }
 
     /// The text most recently pushed to the system clipboard via
-    /// [`set_clipboard`](Backend::set_clipboard), or `None` if none was (ADR 0021).
+    /// [`set_clipboard`](Backend::set_clipboard), or `None` if none was (the editor's ADR 0021).
     pub fn clipboard(&self) -> Option<&str> {
         self.clipboard.as_deref()
     }

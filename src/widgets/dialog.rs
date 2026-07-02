@@ -2,12 +2,12 @@
 //!
 //! A bordered, titled box of [controls](super) that runs *modally* over the
 //! current screen via [`Application::exec_view`](crate::app::Application::exec_view)
-//! and yields the command that closed it (ADR 0017). Unlike a
+//! and yields the command that closed it (ADR 0010). Unlike a
 //! [`Window`](super::Window) a dialog is not on the desktop and never joins the
 //! application's view tree: it is created, run by `exec_view`, and dropped.
 //!
 //! The controls are owned by an inner [`Group`], so the focused control draws
-//! focused and `Tab` cycles them (ADR 0017). The dialog adds the modal manners on
+//! focused and `Tab` cycles them (ADR 0010). The dialog adds the modal manners on
 //! top: `Esc` cancels, `Enter` activates the default button, and a small set of
 //! *ending* commands stop the modal loop.
 
@@ -157,7 +157,7 @@ impl View for Dialog {
     }
 
     fn drop_shadow(&self) -> Option<Style> {
-        // A modal always floats over the background, so it always casts (ADR 0020).
+        // A modal always floats over the background, so it always casts (ADR 0011).
         Some(self.shadow_style)
     }
 }

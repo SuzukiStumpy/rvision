@@ -1,5 +1,5 @@
 //! The help page pane: a read-only renderer for one
-//! [`HelpTopic`](crate::help::HelpTopic) that scrolls both ways (ADR 0023,
+//! [`HelpTopic`](crate::help::HelpTopic) that scrolls both ways (ADR 0013,
 //! `docs/specs/help.md`).
 //!
 //! It reflows [`Paragraph`](crate::help::Block::Paragraph) prose to its current

@@ -86,7 +86,7 @@ impl<T: Backend + EventSource> Application<T> {
     }
 
     /// Pushes `text` to the host system clipboard through the backend (OSC 52 on
-    /// a real terminal, a no-op on a backend that cannot reach one — ADR 0021).
+    /// a real terminal, a no-op on a backend that cannot reach one — the editor's ADR 0021).
     ///
     /// # Errors
     ///
@@ -128,7 +128,7 @@ impl<T: Backend + EventSource> Application<T> {
     }
 
     /// Runs `dialog` modally over `background`, returning the command that closed
-    /// it (ADR 0017) — TurboVision's `execView`.
+    /// it (ADR 0010) — TurboVision's `execView`.
     ///
     /// Each turn: build a frame at the terminal's current size, let `background`
     /// **draw** (it receives no events while the dialog is up), centre the dialog
@@ -159,7 +159,7 @@ impl<T: Backend + EventSource> Application<T> {
             {
                 let mut canvas = Canvas::new(&mut frame);
                 // The modal casts its own drop shadow on the background it floats
-                // over, through the per-view protocol (ADR 0020).
+                // over, through the per-view protocol (ADR 0011).
                 if let Some(style) = dialog.drop_shadow() {
                     canvas.shadow(area, style);
                 }
@@ -323,7 +323,7 @@ impl Program for Root {
 
 /// The standard application screen: a menu bar across the top, a status line
 /// across the bottom, and a desktop filling the space between — TurboVision's
-/// `TProgram` (ADR 0016).
+/// `TProgram` (ADR 0009).
 ///
 /// `Shell` is itself a [`View`], so it drops into a [`Root`] and runs in the
 /// [`Application`] loop. Unlike a generic [`Group`](crate::view::Group) it:
@@ -391,7 +391,7 @@ impl Shell {
         self.status_line.set_bounds(r.status);
     }
 
-    /// Three-pass key routing (ADR 0016): menu bar → active window → status line.
+    /// Three-pass key routing (ADR 0009): menu bar → active window → status line.
     fn handle_key(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
         self.menu_bar
             .handle_event(event, ctx)
@@ -434,7 +434,7 @@ impl View for Shell {
         self.status_line.draw(&mut canvas.child(r.status));
         self.menu_bar.draw(&mut canvas.child(r.menu));
         // The open pull-down is the last thing drawn, over the whole frame, so it
-        // sits on top of the desktop below the bar (ADR 0016).
+        // sits on top of the desktop below the bar (ADR 0009).
         self.menu_bar.draw_overlay(canvas);
     }
 
@@ -445,7 +445,7 @@ impl View for Shell {
             // A re-dispatched command (ADR 0003) goes to the active window; CM_QUIT
             // never reaches here — `Root` claims it before re-dispatch.
             Event::Command(_) => self.desktop.handle_event(event, ctx),
-            // A paste goes to the active window, like a key (ADR 0022).
+            // A paste goes to the active window, like a key (ADR 0012).
             Event::Paste(_) => self.desktop.handle_event(event, ctx),
             Event::Resize(size) => {
                 self.relayout(*size);
@@ -906,7 +906,7 @@ mod tests {
         assert!(app.terminal().presents() >= 1);
     }
 
-    // --- exec_view: the modal dialog loop (Phase 5, ADR 0017) ---
+    // --- exec_view: the modal dialog loop (Phase 5, ADR 0010) ---
 
     /// A background program that just paints `BG` at the origin (outside any
     /// centred dialog), so a test can confirm the background was drawn underneath.

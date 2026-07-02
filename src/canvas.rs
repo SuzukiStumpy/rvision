@@ -1,4 +1,4 @@
-//! A translating, clipping draw surface over a [`Buffer`] (ADR 0015).
+//! A translating, clipping draw surface over a [`Buffer`] (ADR 0008).
 //!
 //! A view draws in its own local `(0, 0)`-origin coordinates; the [`Canvas`]
 //! adds the view's absolute offset and confines every write to the view's box
@@ -19,7 +19,7 @@ use crate::geometry::{Point, Rect, Size};
 ///
 /// Local coordinates have their origin at the surface's top-left; a write at
 /// local `p` lands at absolute `offset + p` and only if it falls inside `clip`
-/// (ADR 0015). `size` is the surface's nominal area — the view's own box — which
+/// (ADR 0008). `size` is the surface's nominal area — the view's own box — which
 /// can be larger than `clip` when an ancestor clips it.
 pub struct Canvas<'a> {
     buffer: &'a mut Buffer,

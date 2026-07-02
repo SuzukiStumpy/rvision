@@ -2,7 +2,7 @@
 //!
 //! A focusable [control](super) drawn as `[X] Label` / `[ ] Label`. `Space`
 //! toggles it while focused; `Enter` is left to bubble so the dialog's default
-//! button still fires. Focus shows as a full-width highlight bar (ADR 0017).
+//! button still fires. Focus shows as a full-width highlight bar (ADR 0010).
 
 use crate::canvas::Canvas;
 use crate::cell::Cell;

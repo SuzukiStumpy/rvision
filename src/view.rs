@@ -2,7 +2,7 @@
 //! handler [`Context`], and the [`StaticText`] leaf (ADR 0003, 0004).
 //!
 //! A [`View`] knows its owner-relative [`bounds`](View::bounds), draws itself
-//! through a [`Canvas`] in local coordinates (ADR 0015), and handles events. A
+//! through a [`Canvas`] in local coordinates (ADR 0008), and handles events. A
 //! [`Group`] owns its children (`Vec<Box<dyn View>>`, parent-owns-child), draws
 //! them in z-order, and runs the three-phase dispatch — *positional* (mouse →
 //! the view under the cursor), *focused* (keys/commands → the focus chain), and
@@ -29,11 +29,11 @@ pub trait View {
     fn bounds(&self) -> Rect;
 
     /// Draws the view through `canvas`, which is already offset and clipped to
-    /// the view's bounds: draw at local `(0, 0)` (ADR 0015).
+    /// the view's bounds: draw at local `(0, 0)` (ADR 0008).
     fn draw(&self, canvas: &mut Canvas);
 
     /// The drop shadow this view casts onto its **owner's** surface, or `None`
-    /// (the default) if it casts none (ADR 0020).
+    /// (the default) if it casts none (ADR 0011).
     ///
     /// A shadow falls *outside* the view's own bounds — down its right and
     /// bottom edges — so a view cannot paint it through its own clipped
@@ -63,7 +63,7 @@ pub trait View {
     }
 
     /// Notifies the view that it has gained (`true`) or lost (`false`) the
-    /// keyboard focus, so a focusable view can draw itself focused (ADR 0017).
+    /// keyboard focus, so a focusable view can draw itself focused (ADR 0010).
     ///
     /// The owning [`Group`] pushes this as focus moves; the default ignores it,
     /// so a view that does not draw differently when focused need not implement
@@ -75,7 +75,7 @@ pub trait View {
 }
 
 /// A [`View`] that can be run modally by
-/// [`Application::exec_view`](crate::app::Application::exec_view) (ADR 0017).
+/// [`Application::exec_view`](crate::app::Application::exec_view) (ADR 0010).
 ///
 /// It adds the two things the modal loop needs beyond a plain view: the size to
 /// centre the box at, and which commands end the loop (so the loop returns the
@@ -184,7 +184,7 @@ pub struct Group {
 impl Group {
     /// Creates a group occupying `bounds` that owns `children`. Focus starts on
     /// the first focusable child, or `None` if there is none; that child is told
-    /// it holds the focus (ADR 0017).
+    /// it holds the focus (ADR 0010).
     pub fn new(bounds: Rect, mut children: Vec<Box<dyn View>>) -> Self {
         let focused = children.iter().position(|child| child.focusable());
         if let Some(index) = focused {
@@ -226,7 +226,7 @@ impl Group {
     }
 
     /// Moves focus to child `index`, telling the old and new children (defaulted
-    /// no-ops unless they draw themselves focused, ADR 0017).
+    /// no-ops unless they draw themselves focused, ADR 0010).
     fn set_focus(&mut self, index: usize) {
         if self.focused != Some(index) {
             if let Some(old) = self.focused {
@@ -300,7 +300,7 @@ impl View for Group {
     fn draw(&self, canvas: &mut Canvas) {
         for child in &self.children {
             // A floating child casts its drop shadow on this group's surface
-            // before it — and any higher sibling — is drawn on top (ADR 0020).
+            // before it — and any higher sibling — is drawn on top (ADR 0011).
             if let Some(style) = child.drop_shadow() {
                 canvas.shadow(child.bounds(), style);
             }
@@ -329,7 +329,7 @@ impl View for Group {
 
     fn set_focused(&mut self, focused: bool) {
         // Forward to the focused child so the signal composes through nesting
-        // (ADR 0017): an outer group telling this one it (lost) gained focus
+        // (ADR 0010): an outer group telling this one it (lost) gained focus
         // (un)focuses whichever of our children currently holds it.
         if let Some(index) = self.focused {
             self.children[index].set_focused(focused);
@@ -635,7 +635,7 @@ mod tests {
         );
     }
 
-    // --- Focus notification (ADR 0017) ---
+    // --- Focus notification (ADR 0010) ---
 
     /// A focusable leaf that records its current focus flag, set by its owner.
     struct FocusSpy {
@@ -708,7 +708,7 @@ mod tests {
     #[test]
     fn a_group_forwards_focus_to_its_focused_child() {
         // An outer container telling a nested group it lost focus must reach the
-        // grandchild that actually holds it (composition, ADR 0017).
+        // grandchild that actually holds it (composition, ADR 0010).
         let leaf = Rc::new(RefCell::new(false));
         let mut group = Group::new(
             rect(0, 0, 10, 3),
@@ -810,7 +810,7 @@ mod tests {
         assert_eq!(ids, vec![1, 2], "both children saw the broadcast");
     }
 
-    // --- Drop-shadow protocol (ADR 0020) ---
+    // --- Drop-shadow protocol (ADR 0011) ---
 
     #[test]
     fn a_plain_view_casts_no_shadow() {

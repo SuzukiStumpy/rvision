@@ -29,7 +29,7 @@
 //! adds modal dialogs and controls: [`widgets::Dialog`]/[`widgets::MessageBox`]/
 //! [`widgets::FileDialog`] run via [`app::Application::exec_view`], holding
 //! [`widgets::Button`], [`widgets::InputLine`], [`widgets::CheckBox`],
-//! [`widgets::RadioButtons`], and [`widgets::ListBox`] (ADR 0017).
+//! [`widgets::RadioButtons`], and [`widgets::ListBox`] (ADR 0010).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

@@ -190,7 +190,7 @@ pub struct Command(pub u16);
 ///
 /// `Event` is `Clone` but not `Copy`: every variant except [`Paste`](Self::Paste)
 /// is small and heap-free, and dispatch passes events by reference, so a clone is
-/// rare. `Paste` owns the pasted text (bracketed paste, ADR 0022).
+/// rare. `Paste` owns the pasted text (bracketed paste, ADR 0012).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Event {
     /// A key was pressed.
@@ -204,7 +204,7 @@ pub enum Event {
     /// The terminal was resized to the given size.
     Resize(Size),
     /// A bracketed paste delivered this text as one chunk, to insert verbatim at
-    /// the focused view rather than as a storm of synthetic keystrokes (ADR 0022).
+    /// the focused view rather than as a storm of synthetic keystrokes (ADR 0012).
     Paste(String),
     /// The poll timeout elapsed with no input — drives blink/idle work.
     Idle,

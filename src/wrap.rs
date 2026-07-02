@@ -1,7 +1,7 @@
 //! Word-wrapping for dialog and help prose.
 //!
 //! A pure helper that breaks paragraphs into lines fitting a maximum display
-//! width, so callers pass prose rather than pre-broken lines (the ADR 0022
+//! width, so callers pass prose rather than pre-broken lines (the ADR 0012
 //! follow-up). Width is measured in display columns, the same unit the
 //! [`Cell`](crate::cell)/[`Buffer`](crate::buffer) path uses (ADR 0006/0015).
 
@@ -21,7 +21,7 @@ pub fn wrap(text: &str, width: u16) -> Vec<String> {
     let width = width as usize;
     let mut out = Vec::new();
     // Hard breaks first, so '\n' (and the blank spacer lines callers rely on,
-    // ADR 0022) always survive intact.
+    // ADR 0012) always survive intact.
     for hard_line in text.split('\n') {
         let mut current = String::new();
         // `split_whitespace` collapses runs of spaces into single separators.

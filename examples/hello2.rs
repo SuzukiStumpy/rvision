@@ -8,7 +8,7 @@
 //!
 //! - a **retained view tree**: a `Desktop` view owning a `Group` window, whose
 //!   body is `StaticText` + a `Spinner`, each drawing through its **own** clipped,
-//!   offset `Canvas` in local coordinates (ADR 0015) — no view computes a screen
+//!   offset `Canvas` in local coordinates (ADR 0008) — no view computes a screen
 //!   position;
 //! - **commands, not flags**: a quit key posts `CM_QUIT` to the `Context`; the
 //!   `Root` drains it and ends the loop (ADR 0003, 0004);
@@ -93,7 +93,7 @@ impl View for Spinner {
 }
 
 /// Builds the window: a `Group` whose children are laid out in coordinates
-/// relative to the window's own top-left (ADR 0015). The `Group` draws them in
+/// relative to the window's own top-left (ADR 0008). The `Group` draws them in
 /// order, each through its own clipped sub-`Canvas`.
 fn window(theme: &Theme) -> Group {
     let panel = theme.style(Role::WindowFrame);

@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthStr;
 use super::{Button, Dialog, Label};
 
 /// Maximum interior message width in display columns before a line is wrapped.
-/// Callers pass prose; pre-split short lines (ADR 0022) stay untouched because
+/// Callers pass prose; pre-split short lines (ADR 0012) stay untouched because
 /// hard breaks survive and each is already under this width.
 const MAX_WIDTH: i16 = 50;
 
@@ -65,7 +65,7 @@ fn build(title: &str, message: &str, buttons: &[(&str, Command)], theme: &Theme)
 
     // Wrap to a sane width, then each line becomes its own centred Label so the
     // box grows to fit rather than spilling off one row. Wrapping preserves hard
-    // '\n' breaks, so callers that pre-split short lines (ADR 0022) are untouched.
+    // '\n' breaks, so callers that pre-split short lines (ADR 0012) are untouched.
     let wrapped = wrap::wrap(message, MAX_WIDTH as u16);
     let lines: Vec<&str> = wrapped.iter().map(String::as_str).collect();
     let line_w = |s: &str| s.width() as i16;
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn pre_split_lines_under_the_width_are_left_alone() {
-        // A caller that already split on '\n' (ADR 0022) keeps its layout: each
+        // A caller that already split on '\n' (ADR 0012) keeps its layout: each
         // short hard line stays its own row, none are merged.
         let d = MessageBox::ok("T", "line one\nline two\nline three", &Theme::default());
         let one = MessageBox::ok("T", "line one", &Theme::default());

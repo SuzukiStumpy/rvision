@@ -3,7 +3,7 @@
 //!
 //! Each [`StatusItem`] pairs a shown hint (`F1`, `Alt-X`) and label (`Help`,
 //! `Exit`) with the key that fires it and the command it posts. The status line is
-//! a *post-process* handler in the shell (ADR 0016): it gets a key only after the
+//! a *post-process* handler in the shell (ADR 0009): it gets a key only after the
 //! focused view has declined it, so its hot-keys never shadow typing in a window.
 
 use crate::canvas::Canvas;

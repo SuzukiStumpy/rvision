@@ -1,5 +1,5 @@
 //! Help content: a lightweight markup format, a total parser, and the parsed
-//! topic model (ADR 0023).
+//! topic model (ADR 0013).
 //!
 //! The framework owns the *format* and the *model*; an application supplies the
 //! *content* (baked in with `include_str!`) and a viewer. This mirrors Turbo
@@ -36,7 +36,7 @@
 //! - Topic order is declaration order; the first topic is the home topic.
 
 /// One unit of a topic's body. Grows additively (headings, lists, inline link
-/// spans) as the help system gains features (ADR 0023).
+/// spans) as the help system gains features (ADR 0013).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
     /// Prose to be reflowed to the page width. Source line breaks have already

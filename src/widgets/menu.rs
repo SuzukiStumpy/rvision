@@ -5,7 +5,7 @@
 //! the open/highlight state lives on the [`MenuBar`] and the application shell
 //! drives it — feeding it keys first (so it can claim `Alt`-hot-keys and, while
 //! open, run modally) and drawing its pull-down last, as an overlay over the whole
-//! frame (ADR 0016).
+//! frame (ADR 0009).
 
 use crate::canvas::Canvas;
 use crate::cell::Cell;
@@ -144,7 +144,7 @@ impl MenuBar {
     }
 
     /// Whether a pull-down is currently open (the shell routes all keys here while
-    /// it is, ADR 0016).
+    /// it is, ADR 0009).
     pub fn is_open(&self) -> bool {
         self.open.is_some()
     }
@@ -343,7 +343,7 @@ impl MenuBar {
     }
 
     /// Draws an open pull-down over the whole frame. The shell calls this after
-    /// everything else so the box sits on top (ADR 0016); a closed bar draws
+    /// everything else so the box sits on top (ADR 0009); a closed bar draws
     /// nothing.
     pub fn draw_overlay(&self, canvas: &mut Canvas) {
         let Some((index, menu)) = self.open_menu_ref() else {

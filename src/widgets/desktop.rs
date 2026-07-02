@@ -60,7 +60,7 @@ impl View for Desktop {
         canvas.fill(area, &self.backdrop);
         for window in &self.windows {
             // The window casts its drop shadow on the backdrop (or a lower
-            // window) before it is drawn on top of that shadow (ADR 0020).
+            // window) before it is drawn on top of that shadow (ADR 0011).
             if let Some(style) = window.drop_shadow() {
                 canvas.shadow(window.bounds(), style);
             }
@@ -86,7 +86,7 @@ impl View for Desktop {
                 EventResult::Ignored
             }
             // Focused: only the active window. Its ignored result bubbles up so the
-            // shell can try the status line next (ADR 0016). Paste rides along.
+            // shell can try the status line next (ADR 0009). Paste rides along.
             Event::Key(_) | Event::Command(_) | Event::Paste(_) => match self.active {
                 Some(index) => self.windows[index].handle_event(event, ctx),
                 None => EventResult::Ignored,
@@ -173,7 +173,7 @@ mod tests {
         let log = Rc::new(RefCell::new(Vec::new()));
         let shadow = Theme::default().style(Role::Shadow);
         // An 8×4 window at (2, 1), clear of the surface edges so its whole shadow
-        // lands on the backdrop: the right strip starts at x = 10 (ADR 0020).
+        // lands on the backdrop: the right strip starts at x = 10 (ADR 0011).
         let desk = Desktop::new(
             rect(0, 0, 20, 10),
             Cell::from_char('░', Style::new()),

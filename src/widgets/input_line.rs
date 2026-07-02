@@ -4,7 +4,7 @@
 //! `String`, a grapheme cursor, and a horizontal scroll offset so a value longer
 //! than the field stays usable. Editing and cursor motion step by **grapheme
 //! cluster** (`unicode-segmentation`, ADR 0006/0008), never by byte. When focused
-//! it draws a caret (a reverse-video cell, ADR 0017); a real hardware cursor
+//! it draws a caret (a reverse-video cell, ADR 0010); a real hardware cursor
 //! waits for the editor (Phase 6).
 
 use crate::canvas::Canvas;
@@ -184,7 +184,7 @@ impl View for InputLine {
         }
 
         // The caret: a reverse-video cell over the grapheme at the cursor (or a
-        // blank past the end), drawn only when focused (ADR 0017).
+        // blank past the end), drawn only when focused (ADR 0010).
         if self.focused {
             let caret_col = col_of(&graphemes, self.cursor) - col_of(&graphemes, self.scroll);
             if caret_col >= 0 && caret_col < width {
@@ -211,7 +211,7 @@ impl View for InputLine {
             return EventResult::Ignored;
         }
         // A bracketed paste drops its text in at the caret; a single-line field
-        // takes only the printable characters, flattening any newlines (ADR 0022).
+        // takes only the printable characters, flattening any newlines (ADR 0012).
         if let Event::Paste(text) = event {
             if !self.focused {
                 return EventResult::Ignored;

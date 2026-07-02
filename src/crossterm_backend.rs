@@ -58,7 +58,7 @@ impl CrosstermBackend {
         out.execute(EnterAlternateScreen)?;
         out.execute(ct::EnableMouseCapture)?;
         // Ask the terminal to bracket pasted text so we receive it as one
-        // `Event::Paste` rather than a burst of fake keystrokes (ADR 0022).
+        // `Event::Paste` rather than a burst of fake keystrokes (ADR 0012).
         out.execute(ct::EnableBracketedPaste)?;
         out.execute(Hide)?;
         let (cols, rows) = terminal::size()?;
@@ -110,7 +110,7 @@ impl Backend for CrosstermBackend {
     }
 
     fn set_clipboard(&mut self, text: &str) -> io::Result<()> {
-        // Write the OSC 52 escape raw — it is not a crossterm command (ADR 0021).
+        // Write the OSC 52 escape raw — it is not a crossterm command (the editor's ADR 0021).
         let mut out = io::stdout().lock();
         out.write_all(crate::osc52::set_clipboard(text).as_bytes())?;
         out.flush()
@@ -223,7 +223,7 @@ fn map_event(event: ct::Event) -> Option<Event> {
         ct::Event::Key(key) => map_key(key).map(Event::Key),
         ct::Event::Mouse(mouse) => map_mouse(mouse).map(Event::Mouse),
         ct::Event::Resize(cols, rows) => Some(Event::Resize(Size::new(cols as i16, rows as i16))),
-        // Bracketed paste arrives as one chunk (ADR 0022).
+        // Bracketed paste arrives as one chunk (ADR 0012).
         ct::Event::Paste(text) => Some(Event::Paste(text)),
         ct::Event::FocusGained | ct::Event::FocusLost => None,
     }

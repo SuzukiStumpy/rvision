@@ -1,4 +1,4 @@
-//! OSC 52 terminal clipboard escapes (ADR 0021).
+//! OSC 52 terminal clipboard escapes (the editor's ADR 0021).
 //!
 //! OSC 52 lets a program set the host's clipboard by writing an escape sequence
 //! `ESC ] 52 ; c ; <base64> BEL`, where `<base64>` is the standard-alphabet
@@ -9,7 +9,7 @@
 //!
 //! Only the *set* direction is implemented. Reading the clipboard back (the `?`
 //! query form) is deliberately omitted: it is asynchronous, widely disabled for
-//! security, and prompts the user on many terminals (ADR 0021).
+//! security, and prompts the user on many terminals (the editor's ADR 0021).
 
 /// The OSC 52 escape that sets the system clipboard (`c`) to `text`.
 ///

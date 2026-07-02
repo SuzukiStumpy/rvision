@@ -51,7 +51,7 @@ impl Window {
     /// Sets whether this window casts a drop shadow on what lies behind it
     /// (default `true`). Turn it off for a window meant to sit flush — e.g. one
     /// maximised to fill the desktop, whose shadow would only fall off-screen
-    /// (ADR 0020).
+    /// (ADR 0011).
     pub fn set_casts_shadow(&mut self, casts: bool) {
         self.casts_shadow = casts;
     }
@@ -188,7 +188,7 @@ mod tests {
             Box::new(StaticText::new(rect(0, 0, 1, 1), "", Style::new())),
         );
         // Default: the window reports the theme's shadow style for its owner to
-        // paint (ADR 0020).
+        // paint (ADR 0011).
         assert_eq!(w.drop_shadow(), Some(theme.style(Role::Shadow)));
         // Turning it off makes it sit flush — no shadow reported.
         w.set_casts_shadow(false);

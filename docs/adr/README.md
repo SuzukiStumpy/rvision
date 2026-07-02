@@ -7,7 +7,9 @@ rewriting an old one.
 Numbers 0001–0007 and 0015–0017/0020/0022/0023 below are inherited, renumbered,
 from `rvision`'s original home in the [`edit`](https://github.com/SuzukiStumpy/edit)
 monorepo, where it lived alongside the editor before being extracted into this
-repository. Decisions specific to the editor itself stayed behind there.
+repository. Decisions specific to the editor itself stayed behind there. ADR
+0014 is also inherited, but predates the split and applied to the shared
+workspace from the start, so it kept its original number unchanged.
 
 | #    | Decision |
 |------|----------|
@@ -24,5 +26,6 @@ repository. Decisions specific to the editor itself stayed behind there.
 | [0011](0011-drop-shadows-per-view-protocol.md) | Drop shadows are a per-view protocol (`View::drop_shadow`) |
 | [0012](0012-paste-in-via-bracketed-paste.md) | Paste-in via bracketed paste (`Event::Paste`) |
 | [0013](0013-help-format-and-model.md) | Help content: lightweight markup format + block topic model |
+| [0014](0014-documentation-process.md) | Full documentation process (ADRs, roadmap, module specs, rustdoc, CLAUDE.md) |
 
 New decision? Copy [`0000-template.md`](0000-template.md).

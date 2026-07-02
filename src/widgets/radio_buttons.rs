@@ -3,7 +3,7 @@
 //! A single focusable [control](super) listing mutually-exclusive options, one
 //! per row, drawn `(•) Label` for the selected option and `( ) Label` for the
 //! rest. `Up`/`Down` move the selection (clamped at the ends, as in TurboVision);
-//! the selected row highlights when the control is focused (ADR 0017).
+//! the selected row highlights when the control is focused (ADR 0010).
 
 use crate::canvas::Canvas;
 use crate::cell::Cell;

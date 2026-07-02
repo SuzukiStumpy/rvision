@@ -12,7 +12,7 @@ use crate::view::View;
 ///
 /// It fills the canvas it is *given*, not the rectangle in its own
 /// [`bounds`](View::bounds): the application shell sizes that canvas to the live
-/// terminal (ADR 0016), so the backdrop covers a resized desktop without being
+/// terminal (ADR 0009), so the backdrop covers a resized desktop without being
 /// reconstructed.
 pub struct Background {
     bounds: Rect,

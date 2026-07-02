@@ -118,7 +118,7 @@ impl Default for Cell {
 ///
 /// The width-aware string drawing in [`crate::buffer::Buffer`] and
 /// [`crate::canvas::Canvas`] both build on this, so the grapheme-segmentation and
-/// width logic lives in exactly one place (ADR 0015). Callers do their own
+/// width logic lives in exactly one place (ADR 0008). Callers do their own
 /// horizontal advance and clipping using each cell's [`Cell::width`].
 pub(crate) fn cells_of(s: &str, style: Style) -> impl Iterator<Item = Cell> + '_ {
     s.graphemes(true)

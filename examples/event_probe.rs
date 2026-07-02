@@ -1,7 +1,7 @@
 //! Diagnostic: dump every event crossterm delivers, raw and unmapped, so we can
 //! see exactly what a given terminal sends — is a paste one `Paste(..)`, a flood
 //! of `Key(..)`, or (for a middle-click) a `Mouse(..)`? Isolates the
-//! terminal + crossterm layer from the rest of `rvision` (ADR 0022 follow-up).
+//! terminal + crossterm layer from the rest of `rvision` (ADR 0012 follow-up).
 //!
 //! Run it, paste however you normally would, then press Esc to quit:
 //!

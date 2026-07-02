@@ -6,7 +6,7 @@
 //! dialog activates when `Enter` is pressed away from any button — the dialog
 //! reads [`is_default`](Button::is_default) to find it. Focus drives the colour:
 //! [`Role::ButtonFocused`] when focused, [`Role::ButtonNormal`] otherwise
-//! (ADR 0017).
+//! (ADR 0010).
 
 use crate::canvas::Canvas;
 use crate::cell::Cell;

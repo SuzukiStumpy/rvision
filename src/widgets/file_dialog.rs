@@ -2,7 +2,7 @@
 //!
 //! Composes a [`ListBox`](super::ListBox) of directory entries, an
 //! [`InputLine`](super::InputLine) for the file name, and *Open*/*Save* +
-//! *Cancel* [`Button`](super::Button)s into a modal view (ADR 0017). `Enter` on a
+//! *Cancel* [`Button`](super::Button)s into a modal view (ADR 0010). `Enter` on a
 //! directory navigates into it; `Enter` on a file (or the default button) accepts
 //! the path; `Esc` cancels. A left **double-click** on a list entry does the same
 //! as `Enter` on it — open the file or step into the folder (ADR 0007). After
@@ -125,7 +125,7 @@ impl FileDialog {
         self.apply_focus();
     }
 
-    /// Pushes the focus flag to whichever control now holds it (ADR 0017).
+    /// Pushes the focus flag to whichever control now holds it (ADR 0010).
     fn apply_focus(&mut self) {
         self.list.set_focused(self.focus == FOCUS_LIST);
         self.input.set_focused(self.focus == FOCUS_INPUT);
@@ -365,7 +365,7 @@ impl View for FileDialog {
     }
 
     fn drop_shadow(&self) -> Option<Style> {
-        // A modal always floats over the background, so it always casts (ADR 0020).
+        // A modal always floats over the background, so it always casts (ADR 0011).
         Some(self.theme.style(Role::Shadow))
     }
 }
