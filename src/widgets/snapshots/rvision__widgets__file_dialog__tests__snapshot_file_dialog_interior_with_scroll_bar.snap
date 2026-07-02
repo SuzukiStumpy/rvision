@@ -1,0 +1,21 @@
+---
+source: src/widgets/file_dialog.rs
+assertion_line: 708
+expression: buf.to_text()
+---
+Name:                                       
+                                            
+                                            
+Files:                                      
+..                                         ▲
+f00.txt                                    █
+f01.txt                                    ▒
+f02.txt                                    ▒
+f03.txt                                    ▒
+f04.txt                                    ▒
+f05.txt                                    ▒
+f06.txt                                    ▒
+f07.txt                                    ▒
+f08.txt                                    ▼
+                                            
+                       Open       Cancel

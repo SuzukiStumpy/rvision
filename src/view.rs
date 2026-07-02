@@ -16,7 +16,7 @@ use crate::canvas::Canvas;
 use crate::color::Style;
 use crate::command::{Command, CommandSet};
 use crate::event::{Event, EventResult, KeyCode, MouseButton, MouseEvent, MouseKind};
-use crate::geometry::{Point, Rect, Size};
+use crate::geometry::{Point, Rect};
 
 /// One node of the UI tree.
 ///
@@ -41,10 +41,10 @@ pub trait View {
     /// `canvas.shadow(child.bounds(), style)` on its own surface *before* drawing
     /// the child on top, so each floating view sits over its own shadow and a
     /// higher sibling's shadow falls on a lower one. A floating widget — a
-    /// [`Window`](crate::widgets::Window) or a modal
-    /// [`Dialog`](crate::widgets::Dialog) — returns the
-    /// [`Role::Shadow`](crate::theme::Role::Shadow) style it resolved at
-    /// construction; flush views (controls, the desktop backdrop) keep `None`.
+    /// [`Window`](crate::widgets::Window), tree-resident or run modally
+    /// (ADR 0016) — returns the [`Role::Shadow`](crate::theme::Role::Shadow)
+    /// style it resolved at construction; flush views (controls, the desktop
+    /// backdrop) keep `None`.
     fn drop_shadow(&self) -> Option<Style> {
         None
     }
@@ -124,23 +124,6 @@ pub struct AxisMetrics {
     pub visible: usize,
     /// The index of the first unit currently shown.
     pub pos: usize,
-}
-
-/// A [`View`] that can be run modally by
-/// [`Application::exec_view`](crate::app::Application::exec_view) (ADR 0010).
-///
-/// It adds the two things the modal loop needs beyond a plain view: the size to
-/// centre the box at, and which commands end the loop (so the loop returns the
-/// command that closed the modal). Both [`Dialog`](crate::widgets::Dialog) and the
-/// file picker implement it.
-pub trait Modal: View {
-    /// The size [`exec_view`](crate::app::Application::exec_view) centres the modal
-    /// at.
-    fn size(&self) -> Size;
-
-    /// Whether a posted `command` should close the modal loop (TurboVision's
-    /// `endModal`). The loop returns the first such command.
-    fn ends_on(&self, command: Command) -> bool;
 }
 
 /// A handler's outbound channel: how a view posts commands and queries command

@@ -26,8 +26,10 @@
 //! tree, its draw surface, and the command vocabulary), [`widgets`] +
 //! [`app::Shell`] are the Phase 4 application chrome (desktop, windows, menu bar,
 //! status line, and the `TProgram`-style root that arranges them), and Phase 5
-//! adds modal dialogs and controls: [`widgets::Dialog`]/[`widgets::MessageBox`]/
-//! [`widgets::FileDialog`] run via [`app::Application::exec_view`], holding
+//! adds dialogs and controls: [`widgets::Window`] (configured as a fixed-size,
+//! centred, modal-mannered "dialog" — [`widgets::MessageBox`]/
+//! [`widgets::FileDialog`] build on this, ADR 0016) runs either tree-resident on
+//! a [`widgets::Desktop`] or modally via [`app::Application::exec_view`], holding
 //! [`widgets::Button`], [`widgets::InputLine`], [`widgets::CheckBox`],
 //! [`widgets::RadioButtons`], and [`widgets::ListBox`] (ADR 0010).
 

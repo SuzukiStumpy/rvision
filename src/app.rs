@@ -16,8 +16,8 @@ use crate::canvas::Canvas;
 use crate::command::{CM_QUIT, Command, CommandSet};
 use crate::event::{Event, EventResult, MouseEvent};
 use crate::geometry::{Point, Rect, Size};
-use crate::view::{Context, Modal, View};
-use crate::widgets::{Desktop, MenuBar, StatusLine};
+use crate::view::{Context, View};
+use crate::widgets::{Desktop, MenuBar, Placement, StatusLine, Window};
 use std::collections::VecDeque;
 use std::io;
 use std::time::Duration;
@@ -127,19 +127,29 @@ impl<T: Backend + EventSource> Application<T> {
         Ok(())
     }
 
-    /// Runs `dialog` modally over `background`, returning the command that closed
-    /// it (ADR 0010) — TurboVision's `execView`.
+    /// Runs `window` modally over `background`, returning the command that closed
+    /// it (ADR 0010) — TurboVision's `execView`. `Modal` is gone (ADR 0016):
+    /// `Window` already carries everything this needs (size via its `bounds`,
+    /// `ends_on`, `valid`), so this now takes the one concrete type that ever
+    /// played that role.
     ///
     /// Each turn: build a frame at the terminal's current size, let `background`
-    /// **draw** (it receives no events while the dialog is up), centre the dialog
-    /// and draw it on top, present, then poll one event and hand it to the dialog.
-    /// A positional event is translated into the dialog's local coordinates. The
-    /// first *ending* command the dialog posts ([`Modal::ends_on`]) returns from
-    /// the loop; any other posted command/broadcast is re-dispatched into the
-    /// dialog, exactly as [`Root`] drains the tree. `Esc` closes it as `CM_CANCEL`.
+    /// **draw** (it receives no events while the window is up); if the window's
+    /// [`Placement`] is
+    /// [`Centered`](crate::widgets::Placement::Centered), reposition it to the
+    /// centre of the terminal first (a [`Positioned`](crate::widgets::Placement::Positioned)
+    /// one runs exactly where its own `bounds` say); draw it on top, present, then
+    /// poll one event and hand it to the window. A positional event is translated
+    /// into the window's local coordinates. The first *ending* command the window
+    /// posts ([`Window::ends_on`]) returns from the loop; any other posted
+    /// command/broadcast is re-dispatched into the window, exactly as [`Root`]
+    /// drains the tree. `Esc` closes it as `CM_CANCEL` when the window is
+    /// configured to (`esc_cancels`).
     ///
-    /// The dialog never joins the application's view tree; it is the caller's,
-    /// borrowed for the duration of the loop and untouched afterwards.
+    /// The window never joins the application's view tree; it is the caller's,
+    /// borrowed for the duration of the loop and untouched afterwards — so a
+    /// caller that wants a reusable dialog just holds the `Window` itself and
+    /// calls this again next time, no reconstruction needed (ADR 0016).
     ///
     /// # Errors
     ///
@@ -147,7 +157,7 @@ impl<T: Backend + EventSource> Application<T> {
     pub fn exec_view(
         &mut self,
         background: &mut dyn Program,
-        dialog: &mut dyn Modal,
+        window: &mut Window,
     ) -> io::Result<Command> {
         let commands = CommandSet::new();
         loop {
@@ -155,16 +165,19 @@ impl<T: Backend + EventSource> Application<T> {
             let mut frame = Buffer::new(size);
             background.draw(&mut frame);
 
-            let area = centered(dialog.size(), size);
+            if window.placement() == Placement::Centered {
+                window.set_bounds(centered(window.bounds().size(), size));
+            }
+            let area = window.bounds();
             {
                 let mut canvas = Canvas::new(&mut frame);
                 // The modal casts its own drop shadow on the background it floats
                 // over, through the per-view protocol (ADR 0011).
-                if let Some(style) = dialog.drop_shadow() {
+                if let Some(style) = window.drop_shadow() {
                     canvas.shadow(area, style);
                 }
                 let mut sub = canvas.child(area);
-                dialog.draw(&mut sub);
+                window.draw(&mut sub);
             }
             self.terminal.present(&frame)?;
 
@@ -172,7 +185,7 @@ impl<T: Backend + EventSource> Application<T> {
                 .terminal
                 .poll_event(self.timeout)?
                 .unwrap_or(Event::Idle);
-            // Translate a positional event into the dialog's local coordinates;
+            // Translate a positional event into the window's local coordinates;
             // everything else passes through unchanged.
             let event = match event {
                 Event::Mouse(mouse) => Event::Mouse(MouseEvent {
@@ -182,7 +195,7 @@ impl<T: Backend + EventSource> Application<T> {
                 other => other,
             };
 
-            if let Some(command) = dispatch_modal(dialog, &event, &commands) {
+            if let Some(command) = dispatch_modal(window, &event, &commands) {
                 return Ok(command);
             }
         }
@@ -198,21 +211,21 @@ fn centered(size: Size, within: Size) -> Rect {
     Rect::from_origin_size(Point::new(x, y), Size::new(w, h))
 }
 
-/// Delivers one event to `dialog` and drains what it posts: a posted *ending*
-/// command (`Dialog::ends_on`) is returned to stop the modal loop; any other
-/// posted command/broadcast is re-dispatched into the dialog. Returns `None` if
+/// Delivers one event to `window` and drains what it posts: a posted *ending*
+/// command (`Window::ends_on`) is returned to stop the modal loop; any other
+/// posted command/broadcast is re-dispatched into the window. Returns `None` if
 /// nothing ended the loop.
-fn dispatch_modal(dialog: &mut dyn Modal, event: &Event, commands: &CommandSet) -> Option<Command> {
+fn dispatch_modal(window: &mut Window, event: &Event, commands: &CommandSet) -> Option<Command> {
     let mut queue = VecDeque::new();
     {
         let mut ctx = Context::new(commands);
-        dialog.handle_event(event, &mut ctx);
+        window.handle_event(event, &mut ctx);
         queue.extend(ctx.take_posted());
     }
     let mut budget = MAX_POSTED_PER_EVENT;
     while let Some(posted) = queue.pop_front() {
         if let Event::Command(command) = posted {
-            if dialog.ends_on(command) {
+            if window.ends_on(command) {
                 return Some(command);
             }
         }
@@ -221,7 +234,7 @@ fn dispatch_modal(dialog: &mut dyn Modal, event: &Event, commands: &CommandSet) 
         }
         budget -= 1;
         let mut ctx = Context::new(commands);
-        dialog.handle_event(&posted, &mut ctx);
+        window.handle_event(&posted, &mut ctx);
         queue.extend(ctx.take_posted());
     }
     None
@@ -281,15 +294,25 @@ impl Root {
     }
 
     /// Dispatches `event`, then drains posted commands/broadcasts, re-dispatching
-    /// each from the root. [`CM_QUIT`] ends the loop; everything else flows back
-    /// into the tree. Returns the result of the original event.
+    /// each from the root. [`CM_QUIT`] ends the loop, but only once the tree
+    /// agrees it's `valid` (ADR 0016) — asked of the single root view, so a
+    /// `Desktop`'s or `Group`'s own fan-out override reaches every window/child
+    /// underneath without `Root` knowing either exists. A refusal leaves the
+    /// loop running; any follow-up the refusing view posted (e.g. "confirm
+    /// discard") is drained and re-dispatched like any other posted event.
+    /// Everything else flows back into the tree. Returns the result of the
+    /// original event.
     fn dispatch(&mut self, event: &Event) -> EventResult {
         let mut queue = VecDeque::new();
         let result = self.deliver(event, &mut queue);
         let mut budget = MAX_POSTED_PER_EVENT;
         while let Some(posted) = queue.pop_front() {
             if posted == Event::Command(CM_QUIT) {
-                self.finished = true;
+                let mut ctx = Context::new(&self.commands);
+                if self.view.valid(CM_QUIT, &mut ctx) {
+                    self.finished = true;
+                }
+                queue.extend(ctx.take_posted());
                 continue;
             }
             if budget == 0 {
@@ -925,7 +948,7 @@ mod tests {
         }
     }
 
-    fn message_box() -> crate::widgets::Dialog {
+    fn message_box() -> crate::widgets::Window {
         crate::widgets::MessageBox::ok_cancel("Confirm", "Proceed?", &Theme::default())
     }
 
@@ -953,7 +976,7 @@ mod tests {
         let mut app = Application::new(terminal);
         let mut background = Backdrop;
         let mut dialog = message_box();
-        let area = centered(dialog.size(), size);
+        let area = centered(dialog.bounds().size(), size);
 
         app.exec_view(&mut background, &mut dialog).unwrap();
 

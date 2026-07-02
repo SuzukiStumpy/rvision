@@ -1,7 +1,8 @@
 //! Canned information / confirmation dialogs (TurboVision's `messageBox`).
 //!
-//! Each constructor builds a [`Dialog`](super::Dialog) with the message on one
-//! row and a centred row of buttons below; the first button is the default and
+//! Each constructor builds a [`Window`](super::Window) — fixed-size, centred,
+//! not resizable/zoomable/closable (ADR 0016) — with the message on one row
+//! and a centred row of buttons below; the first button is the default and
 //! every button's command ends the modal loop. Run it with
 //! [`Application::exec_view`](crate::app::Application::exec_view); the returned
 //! command says which button was pressed.
@@ -9,11 +10,11 @@
 use crate::command::{CM_CANCEL, CM_NO, CM_OK, CM_YES, Command};
 use crate::geometry::{Point, Rect, Size};
 use crate::theme::Theme;
-use crate::view::View;
+use crate::view::{Group, View};
 use crate::wrap;
 use unicode_width::UnicodeWidthStr;
 
-use super::{Button, Dialog, Label};
+use super::{Button, Label, Window};
 
 /// Maximum interior message width in display columns before a line is wrapped.
 /// Callers pass prose; pre-split short lines (ADR 0012) stay untouched because
@@ -25,12 +26,12 @@ pub struct MessageBox;
 
 impl MessageBox {
     /// An information box with a single `OK` button (returns `CM_OK`).
-    pub fn ok(title: &str, message: &str, theme: &Theme) -> Dialog {
+    pub fn ok(title: &str, message: &str, theme: &Theme) -> Window {
         build(title, message, &[("OK", CM_OK)], theme)
     }
 
     /// A confirmation box with `OK` (default) and `Cancel` (`CM_OK`/`CM_CANCEL`).
-    pub fn ok_cancel(title: &str, message: &str, theme: &Theme) -> Dialog {
+    pub fn ok_cancel(title: &str, message: &str, theme: &Theme) -> Window {
         build(
             title,
             message,
@@ -40,13 +41,13 @@ impl MessageBox {
     }
 
     /// A yes/no question with `Yes` (default) and `No` (`CM_YES`/`CM_NO`).
-    pub fn yes_no(title: &str, message: &str, theme: &Theme) -> Dialog {
+    pub fn yes_no(title: &str, message: &str, theme: &Theme) -> Window {
         build(title, message, &[("Yes", CM_YES), ("No", CM_NO)], theme)
     }
 
     /// A three-way question — `Yes` (default) / `No` / `Cancel`
     /// (`CM_YES`/`CM_NO`/`CM_CANCEL`) — for "save changes before…?" prompts.
-    pub fn yes_no_cancel(title: &str, message: &str, theme: &Theme) -> Dialog {
+    pub fn yes_no_cancel(title: &str, message: &str, theme: &Theme) -> Window {
         build(
             title,
             message,
@@ -58,7 +59,7 @@ impl MessageBox {
 
 /// One interior cell of horizontal padding on each side; the box is two rows of
 /// border plus message / gap / buttons.
-fn build(title: &str, message: &str, buttons: &[(&str, Command)], theme: &Theme) -> Dialog {
+fn build(title: &str, message: &str, buttons: &[(&str, Command)], theme: &Theme) -> Window {
     const PAD: i16 = 2; // interior horizontal padding each side
     const GAP: i16 = 2; // columns between buttons
     const MSG_TOP: i16 = 1; // first message row (row 0 is top padding)
@@ -111,12 +112,35 @@ fn build(title: &str, message: &str, buttons: &[(&str, Command)], theme: &Theme)
         x += w + GAP;
     }
 
+    // Controls are laid out in the window's *interior* coordinates (inset one
+    // cell on every side), so they need a Group sized to match, same as the
+    // old Dialog's own interior Group did.
+    let interior = Rect::from_origin_size(
+        Point::new(1, 1),
+        Size::new((size.width - 2).max(0), (size.height - 2).max(0)),
+    );
+    let group = Group::new(interior, controls);
+
     let default_cmd = buttons[0].1;
-    let mut dialog = Dialog::new(size, title, theme, controls).with_default(default_cmd);
+    let mut window = Window::dialog(
+        Rect::from_origin_size(Point::new(0, 0), size),
+        title,
+        theme,
+        Box::new(group),
+    )
+    .centered()
+    .resizable(false)
+    .zoomable(false)
+    // No system box to click through by accident — TV message boxes don't
+    // show one either, and CM_CLOSE isn't a registered ending command here,
+    // so leaving it closable would draw a glyph that does nothing (ADR 0016).
+    .closable(false)
+    .esc_cancels(true)
+    .with_default(default_cmd);
     for (_, command) in buttons {
-        dialog = dialog.also_ends_on(*command);
+        window = window.also_ends_on(*command);
     }
-    dialog
+    window
 }
 
 #[cfg(test)]
@@ -137,7 +161,6 @@ mod tests {
         let mut d = MessageBox::ok_cancel("Confirm", "Proceed?", &Theme::default());
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
-        // Focus starts on the default OK button; Enter posts CM_OK.
         assert_eq!(
             d.handle_event(&key(KeyCode::Enter), &mut ctx),
             EventResult::Consumed
@@ -161,9 +184,22 @@ mod tests {
     }
 
     #[test]
+    fn esc_cancels_a_plain_ok_box() {
+        // A message box always has a way out even without a Cancel button.
+        let mut d = MessageBox::ok("Info", "Done.", &Theme::default());
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert_eq!(
+            d.handle_event(&key(KeyCode::Esc), &mut ctx),
+            EventResult::Consumed
+        );
+        assert_eq!(ctx.posted(), &[Event::Command(CM_CANCEL)]);
+    }
+
+    #[test]
     fn snapshot_message_box() {
         let d = MessageBox::yes_no("Confirm", "Save changes?", &Theme::default());
-        let size = d.size();
+        let size = d.bounds().size();
         let mut buf = Buffer::new(size);
         let mut canvas = Canvas::new(&mut buf);
         d.draw(&mut canvas);
@@ -173,9 +209,8 @@ mod tests {
     #[test]
     fn each_message_line_adds_one_row_to_the_box() {
         let one = MessageBox::ok("T", "One line.", &Theme::default());
-        // A blank middle line counts too — it is the spacer that previously bled.
         let three = MessageBox::ok("T", "Line one.\n\nLine three.", &Theme::default());
-        assert_eq!(three.size().height - one.size().height, 2);
+        assert_eq!(three.bounds().size().height - one.bounds().size().height, 2);
     }
 
     #[test]
@@ -187,16 +222,16 @@ mod tests {
         let d = MessageBox::ok("Info", long, &Theme::default());
         // It wrapped: the box stays near the wrap width, not the raw length…
         assert!(
-            d.size().width <= MAX_WIDTH + 6,
+            d.bounds().size().width <= MAX_WIDTH + 6,
             "box width {} stayed bounded",
-            d.size().width
+            d.bounds().size().width
         );
         assert!(
-            (d.size().width as usize) < long.chars().count(),
+            (d.bounds().size().width as usize) < long.chars().count(),
             "and is far narrower than the unwrapped message"
         );
         // …and grew taller, one extra row per wrapped line.
-        assert!(d.size().height > one.size().height);
+        assert!(d.bounds().size().height > one.bounds().size().height);
     }
 
     #[test]
@@ -205,7 +240,7 @@ mod tests {
         // short hard line stays its own row, none are merged.
         let d = MessageBox::ok("T", "line one\nline two\nline three", &Theme::default());
         let one = MessageBox::ok("T", "line one", &Theme::default());
-        assert_eq!(d.size().height - one.size().height, 2);
+        assert_eq!(d.bounds().size().height - one.bounds().size().height, 2);
     }
 
     #[test]
@@ -217,7 +252,7 @@ mod tests {
             "Clipboard is empty.\n\nUse Ctrl+Shift+V.",
             &Theme::default(),
         );
-        let size = d.size();
+        let size = d.bounds().size();
         let mut buf = Buffer::new(size);
         let mut canvas = Canvas::new(&mut buf);
         d.draw(&mut canvas);

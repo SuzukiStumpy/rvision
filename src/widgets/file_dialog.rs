@@ -2,12 +2,14 @@
 //!
 //! Composes a [`ListBox`](super::ListBox) of directory entries, an
 //! [`InputLine`](super::InputLine) for the file name, and *Open*/*Save* +
-//! *Cancel* [`Button`](super::Button)s into a modal view (ADR 0010). `Enter` on a
-//! directory navigates into it; `Enter` on a file (or the default button) accepts
-//! the path; `Esc` cancels. A left **double-click** on a list entry does the same
-//! as `Enter` on it — open the file or step into the folder (ADR 0007). After
+//! *Cancel* [`Button`](super::Button)s into a [`Window`](super::Window)'s
+//! interior (ADR 0016). `Enter` on a directory navigates into it; `Enter` on a
+//! file (or the default button) accepts the path; `Esc` cancels (via the
+//! window's `esc_cancels`, not `FileDialog` itself). A left **double-click**
+//! on a list entry does the same as `Enter` on it — open the file or step into
+//! the folder (ADR 0007). After
 //! [`exec_view`](crate::app::Application::exec_view) returns `CM_OK`,
-//! [`path`](FileDialog::path) is the chosen file.
+//! [`FileDialogResult::path`] is the chosen file.
 //!
 //! Directory listing is read through an injected closure (real `std::fs` by
 //! default), so navigation is testable without touching the filesystem.
@@ -18,19 +20,19 @@
 //! [`View::set_scroll`] — the second, non-`Window` proof of the protocol
 //! alongside `ListBox` itself.
 
+use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 
 use crate::canvas::Canvas;
-use crate::cell::Cell;
-use crate::color::Style;
-use crate::command::{CM_CANCEL, CM_OK, Command};
+use crate::command::{CM_CANCEL, CM_OK};
 use crate::event::{Event, EventResult, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect, Size};
 use crate::theme::{Role, Theme};
-use crate::view::{Context, Modal, View};
+use crate::view::{Context, View};
 
-use super::{Button, InputLine, ListBox, ScrollBar, ScrollPart};
+use super::{Button, InputLine, ListBox, ScrollBar, ScrollPart, Window};
 
 /// One directory entry: a name and whether it is a sub-directory.
 #[derive(Clone)]
@@ -49,11 +51,17 @@ const FOCUS_OPEN: usize = 2;
 const FOCUS_CANCEL: usize = 3;
 const FOCUS_COUNT: usize = 4;
 
-/// A modal file picker.
+/// The interior's own size — the window built around it is this plus one cell
+/// of border on every side.
+const WIDTH: i16 = 44;
+const HEIGHT: i16 = 16;
+
+/// A file picker's controls — the [`Window`](super::Window) interior built by
+/// [`open`](FileDialog::open)/[`save`](FileDialog::save). Draws and dispatches
+/// in its own **local** coordinates (`(0, 0)` is its own top-left corner); it
+/// has no border, title, or shadow of its own — the `Window` around it
+/// supplies all of that (ADR 0016).
 pub struct FileDialog {
-    size: Size,
-    title: String,
-    style: Style,
     theme: Theme,
     reader: Reader,
     dir: PathBuf,
@@ -64,49 +72,105 @@ pub struct FileDialog {
     open: Button,
     cancel: Button,
     focus: usize,
+    /// Shared with the [`FileDialogResult`] handle returned alongside the
+    /// window: written whenever a path is accepted (ADR 0016).
+    result: Rc<RefCell<PathBuf>>,
+}
+
+/// A handle to the path a [`FileDialog`] was accepted with, readable after
+/// [`exec_view`](crate::app::Application::exec_view) returns `CM_OK`.
+/// `FileDialog` itself becomes the window's boxed, type-erased interior
+/// (ADR 0003), so this is the narrow seam back out — the same shared-cell
+/// idiom used throughout the crate's own tests, not a new pattern.
+#[derive(Clone)]
+pub struct FileDialogResult(Rc<RefCell<PathBuf>>);
+
+impl FileDialogResult {
+    /// The path the dialog was last accepted with (empty if never accepted).
+    pub fn path(&self) -> PathBuf {
+        self.0.borrow().clone()
+    }
 }
 
 impl FileDialog {
-    /// An *Open* dialog titled `title`, starting in `dir`.
-    pub fn open(title: &str, dir: impl Into<PathBuf>, theme: &Theme) -> Self {
-        Self::with_reader(title, dir.into(), "Open", theme, Box::new(read_dir_entries))
+    /// An *Open* dialog titled `title`, starting in `dir`: a centred, fixed,
+    /// `Esc`-cancels [`Window`](super::Window) ending on `CM_OK`/`CM_CANCEL`,
+    /// plus the handle to read the chosen path from.
+    pub fn open(title: &str, dir: impl Into<PathBuf>, theme: &Theme) -> (Window, FileDialogResult) {
+        Self::build(title, dir.into(), "Open", theme, Box::new(read_dir_entries))
     }
 
-    /// A *Save* dialog titled `title`, starting in `dir`.
-    pub fn save(title: &str, dir: impl Into<PathBuf>, theme: &Theme) -> Self {
-        Self::with_reader(title, dir.into(), "Save", theme, Box::new(read_dir_entries))
+    /// A *Save* dialog, mirroring [`open`](Self::open).
+    pub fn save(title: &str, dir: impl Into<PathBuf>, theme: &Theme) -> (Window, FileDialogResult) {
+        Self::build(title, dir.into(), "Save", theme, Box::new(read_dir_entries))
     }
 
-    /// The shared constructor (the `reader` seam makes navigation testable).
-    fn with_reader(title: &str, dir: PathBuf, accept: &str, theme: &Theme, reader: Reader) -> Self {
-        let size = Size::new(46, 18);
-        let iw = size.width - 2;
-        let ih = size.height - 2;
-        let list_rect = rect(0, 4, iw, ih - 6);
+    /// Assembles the window around a fresh [`FileDialog`] interior (the
+    /// `reader` seam makes navigation testable).
+    fn build(
+        title: &str,
+        dir: PathBuf,
+        accept: &str,
+        theme: &Theme,
+        reader: Reader,
+    ) -> (Window, FileDialogResult) {
+        let dialog = Self::with_reader(dir, accept, theme, reader);
+        let result = FileDialogResult(Rc::clone(&dialog.result));
+        let window = Window::dialog(
+            Rect::from_origin_size(Point::new(0, 0), Size::new(WIDTH + 2, HEIGHT + 2)),
+            title,
+            theme,
+            Box::new(dialog),
+        )
+        .centered()
+        .resizable(false)
+        .zoomable(false)
+        // No system box — TV file dialogs don't show one either, and neither
+        // CM_CLOSE nor CM_ZOOM is a registered ending command here (ADR 0016).
+        .closable(false)
+        .esc_cancels(true)
+        .also_ends_on(CM_OK)
+        .also_ends_on(CM_CANCEL);
+        (window, result)
+    }
+
+    /// The shared constructor behind [`open`](Self::open)/[`save`](Self::save).
+    fn with_reader(dir: PathBuf, accept: &str, theme: &Theme, reader: Reader) -> Self {
+        let list_rect = rect(0, 4, WIDTH, HEIGHT - 6);
 
         let mut dialog = Self {
-            size,
-            title: title.to_string(),
-            style: theme.style(Role::DialogBackground),
             theme: theme.clone(),
             reader,
             dir: PathBuf::new(),
             entries: Vec::new(),
             list: ListBox::new(list_rect, Vec::new(), theme),
             list_rect,
-            input: InputLine::new(rect(0, 1, iw, 1), theme),
-            open: Button::new(rect(iw - 24, ih - 1, 10, 1), accept, CM_OK, theme).default(true),
-            cancel: Button::new(rect(iw - 12, ih - 1, 10, 1), "Cancel", CM_CANCEL, theme),
+            input: InputLine::new(rect(0, 1, WIDTH, 1), theme),
+            open: Button::new(rect(WIDTH - 24, HEIGHT - 1, 10, 1), accept, CM_OK, theme)
+                .default(true),
+            cancel: Button::new(
+                rect(WIDTH - 12, HEIGHT - 1, 10, 1),
+                "Cancel",
+                CM_CANCEL,
+                theme,
+            ),
             focus: FOCUS_LIST,
+            result: Rc::new(RefCell::new(PathBuf::new())),
         };
         dialog.set_dir(dir);
         dialog
     }
 
     /// The path the dialog currently points at: the directory joined with the
-    /// name field. Read this after `exec_view` returns `CM_OK`.
+    /// name field.
     pub fn path(&self) -> PathBuf {
         self.dir.join(self.input.text())
+    }
+
+    /// Records `path()` as the accepted result and posts `CM_OK`.
+    fn accept(&mut self, ctx: &mut Context) {
+        *self.result.borrow_mut() = self.path();
+        ctx.post(CM_OK);
     }
 
     /// Reads `dir`, rebuilds the list (with a leading `..` unless at the root),
@@ -180,7 +244,7 @@ impl FileDialog {
             Point::new(bounds.width() - 1, 0),
             Size::new(1, bounds.height()),
         );
-        let mut bar = ScrollBar::new(column, self.style);
+        let mut bar = ScrollBar::new(column, self.theme.style(Role::DialogBackground));
         bar.set_metrics(vertical.total, vertical.visible, vertical.pos);
         Some(bar)
     }
@@ -241,7 +305,7 @@ impl FileDialog {
                 }
                 Some(i) => {
                     self.input.set_text(&self.entries[i].name);
-                    ctx.post(CM_OK);
+                    self.accept(ctx);
                     EventResult::Consumed
                 }
                 None => EventResult::Ignored,
@@ -252,7 +316,7 @@ impl FileDialog {
             }
             // The name field or the Open/Save button: accept the typed path.
             _ => {
-                ctx.post(CM_OK);
+                self.accept(ctx);
                 EventResult::Consumed
             }
         }
@@ -274,22 +338,13 @@ impl FileDialog {
         }
     }
 
-    /// The interior rectangle (inset one cell on every side) in local coordinates.
-    fn interior(&self) -> Rect {
-        Rect::from_origin_size(
-            Point::new(1, 1),
-            Size::new((self.size.width - 2).max(0), (self.size.height - 2).max(0)),
-        )
-    }
-
-    /// Routes a mouse event (in dialog-local coordinates) to the control under the
-    /// pointer, focusing it on a left-press. Control bounds are interior-local, so
-    /// the pointer is shifted by the interior origin, then into the control's own
-    /// coordinates. Clicking the list mirrors arrow navigation by syncing the name
-    /// field to the new selection.
+    /// Routes a mouse event (already in this interior's own local
+    /// coordinates — the owning `Window` translates into it, ADR 0016) to the
+    /// control under the pointer, focusing it on a left-press. Clicking the
+    /// list mirrors arrow navigation by syncing the name field to the new
+    /// selection.
     fn handle_mouse(&mut self, m: &MouseEvent, ctx: &mut Context) -> EventResult {
-        let io = self.interior().origin();
-        let p = m.pos.offset(-io.x, -io.y);
+        let p = m.pos;
         let bounds = [
             self.list.bounds(),
             self.input.bounds(),
@@ -375,33 +430,26 @@ fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
 
 impl View for FileDialog {
     fn bounds(&self) -> Rect {
-        Rect::from_origin_size(Point::new(0, 0), self.size)
+        Rect::from_origin_size(Point::new(0, 0), Size::new(WIDTH, HEIGHT))
     }
 
     fn draw(&self, canvas: &mut Canvas) {
-        let area = canvas.bounds();
-        canvas.fill(area, &Cell::blank(self.style));
-        canvas.draw_box(area, self.style);
-        if !self.title.is_empty() && area.width() > 4 {
-            let label = format!(" {} ", self.title);
-            let len = label.chars().count() as i16;
-            let x = ((area.width() - len) / 2).max(1);
-            canvas.put_str(Point::new(x, 0), &label, self.style);
-        }
-
-        let interior = self.interior();
-        if interior.is_empty() {
-            return;
-        }
-        let mut sub = canvas.child(interior);
-        sub.put_str(Point::new(0, 0), "Name:", self.style);
-        sub.put_str(Point::new(0, 3), "Files:", self.style);
+        canvas.put_str(
+            Point::new(0, 0),
+            "Name:",
+            self.theme.style(Role::DialogBackground),
+        );
+        canvas.put_str(
+            Point::new(0, 3),
+            "Files:",
+            self.theme.style(Role::DialogBackground),
+        );
         for control in [&self.input as &dyn View, &self.open, &self.cancel] {
-            let mut child = sub.child(control.bounds());
+            let mut child = canvas.child(control.bounds());
             control.draw(&mut child);
         }
         {
-            let mut child = sub.child(self.list.bounds());
+            let mut child = canvas.child(self.list.bounds());
             self.list.draw(&mut child);
             // Host the list's scroll bar in the column it draws over, if it
             // currently has overflow to show (ADR 0015) — drawn last so it
@@ -420,10 +468,6 @@ impl View for FileDialog {
             _ => return EventResult::Ignored,
         };
         match key.code {
-            KeyCode::Esc => {
-                ctx.post(CM_CANCEL);
-                EventResult::Consumed
-            }
             KeyCode::Tab => {
                 self.move_focus(1);
                 EventResult::Consumed
@@ -440,28 +484,13 @@ impl View for FileDialog {
     fn focusable(&self) -> bool {
         true
     }
-
-    fn drop_shadow(&self) -> Option<Style> {
-        // A modal always floats over the background, so it always casts (ADR 0011).
-        Some(self.theme.style(Role::Shadow))
-    }
-}
-
-impl Modal for FileDialog {
-    fn size(&self) -> Size {
-        self.size
-    }
-
-    fn ends_on(&self, command: Command) -> bool {
-        command == CM_OK || command == CM_CANCEL
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::buffer::Buffer;
-    use crate::command::CommandSet;
+    use crate::command::{CM_USER, Command, CommandSet};
     use crate::event::Modifiers;
 
     fn entry(name: &str, is_dir: bool) -> Entry {
@@ -493,9 +522,10 @@ mod tests {
         })
     }
 
+    /// A bare interior over the fake `/root` filesystem, driven directly (its
+    /// own local coordinates — no border, `(0, 0)` is its own corner).
     fn dialog() -> FileDialog {
         FileDialog::with_reader(
-            "Open",
             PathBuf::from("/root"),
             "Open",
             &Theme::default(),
@@ -519,7 +549,6 @@ mod tests {
 
     fn dialog_with_many_files() -> FileDialog {
         FileDialog::with_reader(
-            "Open",
             PathBuf::from("/many"),
             "Open",
             &Theme::default(),
@@ -550,10 +579,10 @@ mod tests {
         let mut d = dialog(); // entries: .., sub, a.txt, b.txt
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
-        // The list starts at dialog-local (1, 5); "a.txt" is its row 2 → y = 7.
+        // The list starts at local (0, 4); "a.txt" is its row 2 → y = 6.
         let click = Event::Mouse(MouseEvent {
             kind: MouseKind::Down(MouseButton::Left),
-            pos: Point::new(3, 7),
+            pos: Point::new(2, 6),
             modifiers: Modifiers::NONE,
         });
         assert_eq!(d.handle_event(&click, &mut ctx), EventResult::Consumed);
@@ -567,10 +596,10 @@ mod tests {
         let mut d = dialog(); // entries: .., sub, a.txt, b.txt
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
-        // "a.txt" is the list's row 2 → dialog-local y = 7. Double-click = open.
+        // "a.txt" is the list's row 2 → local y = 6. Double-click = open.
         let dc = Event::Mouse(MouseEvent {
             kind: MouseKind::DoubleClick(MouseButton::Left),
-            pos: Point::new(3, 7),
+            pos: Point::new(2, 6),
             modifiers: Modifiers::NONE,
         });
         assert_eq!(d.handle_event(&dc, &mut ctx), EventResult::Consumed);
@@ -581,6 +610,7 @@ mod tests {
             vec![Event::Command(CM_OK)],
             "double-clicking a file accepts, like select + Enter"
         );
+        assert_eq!(d.path(), PathBuf::from("/root/a.txt"));
     }
 
     #[test]
@@ -588,10 +618,10 @@ mod tests {
         let mut d = dialog();
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
-        // "sub" is the list's row 1 → dialog-local y = 6.
+        // "sub" is the list's row 1 → local y = 5.
         let dc = Event::Mouse(MouseEvent {
             kind: MouseKind::DoubleClick(MouseButton::Left),
-            pos: Point::new(3, 6),
+            pos: Point::new(2, 5),
             modifiers: Modifiers::NONE,
         });
         assert_eq!(d.handle_event(&dc, &mut ctx), EventResult::Consumed);
@@ -667,29 +697,9 @@ mod tests {
     }
 
     #[test]
-    fn esc_cancels() {
-        let mut d = dialog();
-        let cs = CommandSet::new();
-        let mut ctx = Context::new(&cs);
-        d.handle_event(
-            &Event::Key(KeyEvent::new(KeyCode::Esc, Modifiers::NONE)),
-            &mut ctx,
-        );
-        assert_eq!(ctx.posted(), &[Event::Command(CM_CANCEL)]);
-    }
-
-    #[test]
-    fn ends_on_ok_and_cancel_only() {
+    fn snapshot_file_dialog_interior() {
         let d = dialog();
-        assert!(Modal::ends_on(&d, CM_OK));
-        assert!(Modal::ends_on(&d, CM_CANCEL));
-        assert!(!Modal::ends_on(&d, Command(crate::command::CM_USER + 1)));
-    }
-
-    #[test]
-    fn snapshot_file_dialog() {
-        let d = dialog();
-        let mut buf = Buffer::new(d.size());
+        let mut buf = Buffer::new(d.bounds().size());
         let mut canvas = Canvas::new(&mut buf);
         d.draw(&mut canvas);
         insta::assert_snapshot!(buf.to_text());
@@ -713,9 +723,9 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_file_dialog_with_scroll_bar() {
+    fn snapshot_file_dialog_interior_with_scroll_bar() {
         let d = dialog_with_many_files();
-        let mut buf = Buffer::new(d.size());
+        let mut buf = Buffer::new(d.bounds().size());
         let mut canvas = Canvas::new(&mut buf);
         d.draw(&mut canvas);
         insta::assert_snapshot!(buf.to_text());
@@ -737,7 +747,7 @@ mod tests {
         let bounds = d.list.bounds();
         let foot = Point::new(bounds.width() - 1, bounds.height() - 1);
         assert_eq!(bar.hit(foot), Some(ScrollPart::LineDown));
-        let list_origin = Point::new(1, 5); // interior (1,1) + list_rect origin (0,4)
+        let list_origin = d.list.bounds().origin();
         let click = Event::Mouse(MouseEvent {
             kind: MouseKind::Down(MouseButton::Left),
             pos: foot.offset(list_origin.x, list_origin.y),
@@ -754,5 +764,71 @@ mod tests {
             "a bar click never changes the selection"
         );
         assert!(ctx.posted().is_empty(), "and never posts a command");
+    }
+
+    // --- The assembled Window (ADR 0016): chrome, ending, Esc ---
+
+    /// The real assembly path (`build`, same as `open`/`save`), but over the
+    /// fake `/root` filesystem so these tests are deterministic regardless of
+    /// what's really on disk.
+    fn window() -> (Window, FileDialogResult) {
+        FileDialog::build(
+            "Open",
+            PathBuf::from("/root"),
+            "Open",
+            &Theme::default(),
+            fake_reader(),
+        )
+    }
+
+    #[test]
+    fn open_builds_a_centred_fixed_window_ending_on_ok_and_cancel() {
+        let (w, _) = window();
+        assert_eq!(w.placement(), crate::widgets::Placement::Centered);
+        assert!(w.ends_on(CM_OK));
+        assert!(w.ends_on(CM_CANCEL));
+        assert!(!w.ends_on(Command(CM_USER + 1)));
+    }
+
+    #[test]
+    fn esc_cancels_via_the_window_not_the_interior() {
+        let (mut w, _) = window();
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let esc = Event::Key(KeyEvent::new(KeyCode::Esc, Modifiers::NONE));
+        assert_eq!(w.handle_event(&esc, &mut ctx), EventResult::Consumed);
+        assert_eq!(ctx.posted(), &[Event::Command(CM_CANCEL)]);
+    }
+
+    #[test]
+    fn accepting_a_file_updates_the_result_handle() {
+        let (mut w, result) = window();
+        assert_eq!(result.path(), PathBuf::new());
+        // Down twice (past "..", "sub") to "a.txt", then Enter accepts it.
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        w.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Down, Modifiers::NONE)),
+            &mut ctx,
+        );
+        w.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Down, Modifiers::NONE)),
+            &mut ctx,
+        );
+        let r = w.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Enter, Modifiers::NONE)),
+            &mut ctx,
+        );
+        assert_eq!(r, EventResult::Consumed);
+        assert_eq!(result.path(), PathBuf::from("/root/a.txt"));
+    }
+
+    #[test]
+    fn snapshot_file_dialog_window() {
+        let (w, _) = window();
+        let mut buf = Buffer::new(w.bounds().size());
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        insta::assert_snapshot!(buf.to_text());
     }
 }

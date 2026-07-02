@@ -57,18 +57,23 @@ pub struct Frame {
     title: String,
     active: bool,
     maximized: bool,
+    closable: bool,
+    zoomable: bool,
     style: Style,
     title_style: Style,
 }
 
 impl Frame {
     /// Creates an (inactive) frame titled `title`, with `style` for the border and
-    /// glyphs and `title_style` for the title text.
+    /// glyphs and `title_style` for the title text. Draws both the close and
+    /// zoom glyphs by default (ADR 0016) — `closable`/`zoomable` turn either off.
     pub fn new(title: &str, style: Style, title_style: Style) -> Self {
         Self {
             title: title.to_string(),
             active: false,
             maximized: false,
+            closable: true,
+            zoomable: true,
             style,
             title_style,
         }
@@ -85,6 +90,29 @@ impl Frame {
     pub fn maximized(mut self, maximized: bool) -> Self {
         self.maximized = maximized;
         self
+    }
+
+    /// Sets whether the close glyph is drawn at all (ADR 0016) — a window with
+    /// `closable(false)` has nothing there to hit, so it's simply not drawn.
+    pub fn closable(mut self, closable: bool) -> Self {
+        self.closable = closable;
+        self
+    }
+
+    /// Sets whether the zoom glyph is drawn at all, mirroring [`closable`](Self::closable).
+    pub fn zoomable(mut self, zoomable: bool) -> Self {
+        self.zoomable = zoomable;
+        self
+    }
+
+    /// Sets the closable flag in place, mirroring [`set_active`](Self::set_active).
+    pub fn set_closable(&mut self, closable: bool) {
+        self.closable = closable;
+    }
+
+    /// Sets the zoomable flag in place, mirroring [`set_active`](Self::set_active).
+    pub fn set_zoomable(&mut self, zoomable: bool) {
+        self.zoomable = zoomable;
     }
 
     /// Sets the active flag in place — the desktop calls this through its
@@ -131,20 +159,27 @@ impl Frame {
         self.draw_border(canvas, area, g);
 
         // The close/zoom glyphs sit just inside the corners; only drawn when the
-        // frame is wide enough, so a narrow one keeps a clean border instead of a
-        // clipped half-glyph. The title is centred in the span *between* them (or
-        // the whole top edge when they are absent) and truncated to fit, so it can
-        // never overdraw a glyph.
+        // frame is wide enough *and* the window is closable/zoomable (ADR 0016)
+        // — a narrow or non-closable/zoomable frame keeps a clean border instead
+        // of a clipped or dead-looking glyph. The title is centred in the span
+        // between whichever glyphs are actually drawn (or the whole top edge
+        // when neither is) and truncated to fit, so it never overdraws a glyph.
         let top = 0;
-        let (left, right) = match (Self::close_span(w), Self::zoom_span(w)) {
-            (Some(close), Some(zoom)) => {
-                let zoom_glyph = if self.maximized { ZOOM_MAXIMIZED } else { ZOOM };
+        let mut left = 1;
+        let mut right = w - 1;
+        if self.closable {
+            if let Some(close) = Self::close_span(w) {
                 canvas.put_str(Point::new(close.start, top), CLOSE, self.style);
-                canvas.put_str(Point::new(zoom.start, top), zoom_glyph, self.style);
-                (close.end, zoom.start)
+                left = close.end;
             }
-            _ => (1, w - 1),
-        };
+        }
+        if self.zoomable {
+            if let Some(zoom) = Self::zoom_span(w) {
+                let zoom_glyph = if self.maximized { ZOOM_MAXIMIZED } else { ZOOM };
+                canvas.put_str(Point::new(zoom.start, top), zoom_glyph, self.style);
+                right = zoom.start;
+            }
+        }
         self.draw_title(canvas, top, left, right);
     }
 

@@ -1,0 +1,21 @@
+---
+source: src/widgets/file_dialog.rs
+assertion_line: 682
+expression: buf.to_text()
+---
+Name:                                       
+                                            
+                                            
+Files:                                      
+..                                          
+sub/                                        
+a.txt                                       
+b.txt                                       
+                                            
+                                            
+                                            
+                                            
+                                            
+                                            
+                                            
+                       Open       Cancel

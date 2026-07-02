@@ -4,8 +4,9 @@
 //! - **Chrome (Phase 4):** a desktop backdrop, framed windows, a status line, and
 //!   a menu bar with pull-downs — the furniture, laid out and routed by
 //!   [`crate::app::Shell`] (ADR 0009).
-//! - **Dialogs & controls (Phase 5):** [`Dialog`] (and [`MessageBox`],
-//!   [`FileDialog`]) run modally via
+//! - **Windows & controls (Phase 5, unified ADR 0016):** [`Window`] (and its
+//!   [`MessageBox`]/[`FileDialog`] configurations) runs either tree-resident on
+//!   a [`Desktop`] or modally via
 //!   [`Application::exec_view`](crate::app::Application::exec_view), holding the
 //!   focusable controls [`Button`], [`Label`], [`InputLine`], [`CheckBox`],
 //!   [`RadioButtons`], [`ListBox`], and [`ScrollBar`]. Focus-aware drawing is the
@@ -17,7 +18,6 @@ mod background;
 mod button;
 mod check_box;
 mod desktop;
-mod dialog;
 mod file_dialog;
 mod frame;
 mod help_pane;
@@ -35,8 +35,7 @@ pub use background::Background;
 pub use button::Button;
 pub use check_box::CheckBox;
 pub use desktop::Desktop;
-pub use dialog::Dialog;
-pub use file_dialog::FileDialog;
+pub use file_dialog::{FileDialog, FileDialogResult};
 pub use frame::Frame;
 pub use help_pane::HelpPane;
 pub use input_line::InputLine;
@@ -47,4 +46,4 @@ pub use message_box::MessageBox;
 pub use radio_buttons::RadioButtons;
 pub use scroll_bar::{Orientation, ScrollBar, ScrollPart};
 pub use status::{StatusItem, StatusLine};
-pub use window::Window;
+pub use window::{Placement, Window};

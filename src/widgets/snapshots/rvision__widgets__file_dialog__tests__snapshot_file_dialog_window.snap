@@ -1,6 +1,6 @@
 ---
 source: src/widgets/file_dialog.rs
-assertion_line: 719
+assertion_line: 809
 expression: buf.to_text()
 ---
 ┌─────────────────── Open ───────────────────┐
@@ -8,16 +8,16 @@ expression: buf.to_text()
 │                                            │
 │                                            │
 │Files:                                      │
-│..                                         ▲│
-│f00.txt                                    █│
-│f01.txt                                    ▒│
-│f02.txt                                    ▒│
-│f03.txt                                    ▒│
-│f04.txt                                    ▒│
-│f05.txt                                    ▒│
-│f06.txt                                    ▒│
-│f07.txt                                    ▒│
-│f08.txt                                    ▼│
+│..                                          │
+│sub/                                        │
+│a.txt                                       │
+│b.txt                                       │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
+│                                            │
 │                                            │
 │                       Open       Cancel    │
 └────────────────────────────────────────────┘

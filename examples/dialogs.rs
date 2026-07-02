@@ -28,9 +28,9 @@ use rvision::crossterm_backend::CrosstermBackend;
 use rvision::event::{Event, EventResult};
 use rvision::geometry::{Point, Rect, Size};
 use rvision::theme::{Role, Theme};
-use rvision::view::View;
+use rvision::view::{Group, View};
 use rvision::widgets::{
-    Button, CheckBox, Dialog, FileDialog, InputLine, Label, MessageBox, RadioButtons,
+    Button, CheckBox, FileDialog, InputLine, Label, MessageBox, RadioButtons, Window,
 };
 
 fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
@@ -64,7 +64,7 @@ impl Program for Backdrop {
 
 /// A custom dialog wiring up an input line, a check box, a radio group, and the
 /// OK/Cancel buttons — interior coordinates have `(0, 0)` just inside the border.
-fn settings_dialog(theme: &Theme) -> Dialog {
+fn settings_dialog(theme: &Theme) -> Window {
     let cancel = Command(3); // CM_CANCEL
     let controls: Vec<Box<dyn View>> = vec![
         Box::new(Label::new(rect(1, 1, 8, 1), "Name:", theme)),
@@ -79,7 +79,23 @@ fn settings_dialog(theme: &Theme) -> Dialog {
         Box::new(Button::new(rect(8, 10, 10, 1), "OK", CM_OK, theme).default(true)),
         Box::new(Button::new(rect(20, 10, 10, 1), "Cancel", cancel, theme)),
     ];
-    Dialog::new(Size::new(34, 13), "Settings", theme, controls).with_default(CM_OK)
+    let size = Size::new(34, 13);
+    let interior = rect(1, 1, size.width - 2, size.height - 2);
+    let group = Group::new(interior, controls);
+    Window::dialog(
+        Rect::from_origin_size(Point::new(0, 0), size),
+        "Settings",
+        theme,
+        Box::new(group),
+    )
+    .centered()
+    .resizable(false)
+    .zoomable(false)
+    .closable(false)
+    .esc_cancels(true)
+    .with_default(CM_OK)
+    .also_ends_on(CM_OK)
+    .also_ends_on(cancel)
 }
 
 fn main() -> io::Result<()> {
@@ -97,9 +113,9 @@ fn main() -> io::Result<()> {
     let settings_result = app.exec_view(&mut backdrop, &mut settings)?;
 
     let start = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut picker = FileDialog::open("Open File", start, &theme);
+    let (mut picker, picker_result) = FileDialog::open("Open File", start, &theme);
     let picked = if app.exec_view(&mut backdrop, &mut picker)? == CM_OK {
-        Some(picker.path())
+        Some(picker_result.path())
     } else {
         None
     };
