@@ -2,12 +2,18 @@
 //!
 //! A focusable [control](super) showing one item per row. `Up`/`Down` move the
 //! selection by one, `PageUp`/`PageDown` by a screenful, `Home`/`End` to the
-//! ends; the view always scrolls to keep the selection visible. When the list is
-//! longer than the box a [`ScrollBar`](super::ScrollBar) is drawn down the right
-//! edge. `Enter` is left to bubble so the dialog's default button (e.g. *Open*)
-//! acts on the selected item. A left **double-click** selects the row like a
-//! single click; turning that into an "activate" (the Enter equivalent) is the
-//! container's job — see [`FileDialog`](super::FileDialog) (ADR 0007).
+//! ends; the view always scrolls to keep the selection visible. `Enter` is left
+//! to bubble so the dialog's default button (e.g. *Open*) acts on the selected
+//! item. A left **double-click** selects the row like a single click; turning
+//! that into an "activate" (the Enter equivalent) is the container's job — see
+//! [`FileDialog`](super::FileDialog) (ADR 0007).
+//!
+//! `ListBox` does not draw or hit-test its own scroll bar: it reports
+//! [`scroll_metrics`](View::scroll_metrics) and accepts
+//! [`set_scroll`](View::set_scroll) instead, so whoever composes it (e.g.
+//! [`FileDialog`](super::FileDialog)) hosts a [`ScrollBar`](super::ScrollBar)
+//! for it (ADR 0015). The mouse wheel still pans the list directly — only the
+//! *bar* moved out, not wheel scrolling.
 
 use crate::canvas::Canvas;
 use crate::cell::Cell;
@@ -15,9 +21,7 @@ use crate::color::Style;
 use crate::event::{Event, EventResult, KeyCode, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect, Size};
 use crate::theme::{Role, Theme};
-use crate::view::{Context, View};
-
-use super::{ScrollBar, ScrollPart};
+use crate::view::{AxisMetrics, Context, ScrollMetrics, View};
 
 /// A scrollable list with one selected row.
 pub struct ListBox {
@@ -105,34 +109,15 @@ impl ListBox {
         self.top = ((self.top as isize) + delta).clamp(0, max_top) as usize;
     }
 
-    /// Handles a mouse event (in the list's local coordinates): a click selects the
-    /// row under the pointer, or — on the scroll bar — scrolls; the wheel pans the
-    /// view a row at a time.
+    /// Handles a mouse event (in the list's local coordinates): a click selects
+    /// the row under the pointer; the wheel pans the view a row at a time.
+    /// Scroll-bar hit-testing is a host's job now (ADR 0015), not the list's.
     fn handle_mouse(&mut self, m: &MouseEvent) -> EventResult {
-        let rows = self.rows();
-        let width = self.bounds.width();
-        let has_bar = self.items.len() > rows && width > 1;
         match m.kind {
             // A double-click selects like a click; the container turns it into an
-            // "activate" (its Enter path). The bar is click-only.
+            // "activate" (its Enter path).
             MouseKind::Down(MouseButton::Left) | MouseKind::DoubleClick(MouseButton::Left) => {
-                if has_bar && m.pos.x == width - 1 {
-                    let mut bar = ScrollBar::new(
-                        Rect::from_origin_size(Point::new(width - 1, 0), Size::new(1, rows as i16)),
-                        self.style,
-                    );
-                    bar.set_metrics(self.items.len(), rows, self.top);
-                    if let Some(part) = bar.hit(m.pos) {
-                        let page = rows.max(1) as isize;
-                        match part {
-                            ScrollPart::LineUp => self.scroll_by(-1),
-                            ScrollPart::LineDown => self.scroll_by(1),
-                            ScrollPart::PageUp => self.scroll_by(-page),
-                            ScrollPart::PageDown => self.scroll_by(page),
-                            ScrollPart::Thumb => {}
-                        }
-                    }
-                } else if m.pos.y >= 0 {
+                if m.pos.y >= 0 {
                     let idx = self.top + m.pos.y as usize;
                     if idx < self.items.len() {
                         self.selected = Some(idx);
@@ -166,45 +151,19 @@ impl View for ListBox {
             return;
         }
 
-        let needs_bar = self.items.len() > rows && area.width() > 1;
-        let text_w = if needs_bar {
-            area.width() - 1
-        } else {
-            area.width()
-        };
-
-        {
-            let mut text = canvas.child(Rect::from_origin_size(
-                Point::new(0, 0),
-                Size::new(text_w, rows as i16),
-            ));
-            for r in 0..rows {
-                let idx = self.top + r;
-                if idx >= self.items.len() {
-                    break;
-                }
-                let row_style = if self.focused && self.selected == Some(idx) {
-                    self.focus_style
-                } else {
-                    self.style
-                };
-                let row = Rect::from_origin_size(Point::new(0, r as i16), Size::new(text_w, 1));
-                text.fill(row, &Cell::blank(row_style));
-                text.put_str(Point::new(0, r as i16), &self.items[idx], row_style);
+        for r in 0..rows {
+            let idx = self.top + r;
+            if idx >= self.items.len() {
+                break;
             }
-        }
-
-        if needs_bar {
-            let mut bar = ScrollBar::new(
-                Rect::from_origin_size(Point::new(0, 0), Size::new(1, rows as i16)),
-                self.style,
-            );
-            bar.set_metrics(self.items.len(), rows, self.top);
-            let mut sub = canvas.child(Rect::from_origin_size(
-                Point::new(text_w, 0),
-                Size::new(1, rows as i16),
-            ));
-            bar.draw(&mut sub);
+            let row_style = if self.focused && self.selected == Some(idx) {
+                self.focus_style
+            } else {
+                self.style
+            };
+            let row = Rect::from_origin_size(Point::new(0, r as i16), Size::new(area.width(), 1));
+            canvas.fill(row, &Cell::blank(row_style));
+            canvas.put_str(Point::new(0, r as i16), &self.items[idx], row_style);
         }
     }
 
@@ -253,6 +212,26 @@ impl View for ListBox {
 
     fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
+    }
+
+    fn scroll_metrics(&self) -> Option<ScrollMetrics> {
+        let rows = self.rows();
+        if self.items.len() <= rows {
+            return None;
+        }
+        Some(ScrollMetrics {
+            horizontal: None,
+            vertical: Some(AxisMetrics {
+                total: self.items.len(),
+                visible: rows,
+                pos: self.top,
+            }),
+        })
+    }
+
+    fn set_scroll(&mut self, offset: Point) {
+        let max_top = self.items.len().saturating_sub(self.rows());
+        self.top = (offset.y.max(0) as usize).min(max_top);
     }
 }
 
@@ -334,13 +313,49 @@ mod tests {
     }
 
     #[test]
-    fn clicking_the_scroll_bar_down_arrow_scrolls() {
-        // 6 items, 3 rows → a scroll bar is drawn at column 9 (width - 1).
+    fn a_click_in_the_former_bar_column_now_just_selects_that_row() {
+        // ListBox no longer reserves or hit-tests a bar column of its own
+        // (ADR 0015) — every column, including the last, is content.
         let mut lb = list(10, 3, &["a", "b", "c", "d", "e", "f"]);
+        mouse(&mut lb, MouseKind::Down(MouseButton::Left), 9, 2);
+        assert_eq!(lb.selected(), Some(2));
+        assert_eq!(lb.top, 0, "a plain click never scrolls");
+    }
+
+    #[test]
+    fn scroll_metrics_is_none_under_a_page_and_some_once_it_overflows() {
+        let short = list(10, 4, &["a", "b"]);
+        assert_eq!(short.scroll_metrics(), None);
+
+        let long = list(10, 3, &["a", "b", "c", "d", "e", "f"]);
+        assert_eq!(
+            long.scroll_metrics(),
+            Some(ScrollMetrics {
+                horizontal: None,
+                vertical: Some(AxisMetrics {
+                    total: 6,
+                    visible: 3,
+                    pos: 0,
+                }),
+            })
+        );
+    }
+
+    #[test]
+    fn set_scroll_clamps_and_moves_top_without_touching_selection() {
+        let mut lb = list(10, 3, &["a", "b", "c", "d", "e", "f"]);
+        lb.set_scroll(Point::new(0, 2));
+        assert_eq!(lb.top, 2);
+        assert_eq!(
+            lb.selected(),
+            Some(0),
+            "set_scroll never moves the selection"
+        );
+
+        lb.set_scroll(Point::new(0, 99)); // clamps to the last full page
+        assert_eq!(lb.top, 3);
+        lb.set_scroll(Point::new(0, -5)); // clamps at zero, no panic/underflow
         assert_eq!(lb.top, 0);
-        mouse(&mut lb, MouseKind::Down(MouseButton::Left), 9, 2); // the ▼ at the bar's foot
-        assert_eq!(lb.top, 1);
-        assert_eq!(lb.selected(), Some(0), "scrolling leaves the selection");
     }
 
     fn render(lb: &ListBox, w: i16, h: i16) -> String {
@@ -397,7 +412,8 @@ mod tests {
 
     #[test]
     fn scrolls_to_keep_the_selection_visible() {
-        // 6 items in a 3-row box: End shows the tail (d, e, f) with a scroll bar.
+        // 6 items in a 3-row box: End shows the tail (d, e, f), full width —
+        // no bar of its own to make room for (ADR 0015).
         let mut lb = list(6, 3, &["aa", "bb", "cc", "dd", "ee", "ff"]);
         press(&mut lb, KeyCode::End);
         let text = render(&lb, 6, 3);
@@ -405,8 +421,6 @@ mod tests {
         assert!(rows[0].starts_with("dd"));
         assert!(rows[1].starts_with("ee"));
         assert!(rows[2].starts_with("ff"));
-        // The scroll bar occupies the last column (a down arrow on the last row).
-        assert!(rows[2].ends_with('▼'));
     }
 
     #[test]
@@ -416,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_list_with_scrollbar() {
+    fn snapshot_list_full_width_no_bar_of_its_own() {
         let lb = list(12, 3, &["alpha", "beta", "gamma", "delta", "epsilon"]);
         insta::assert_snapshot!(render(&lb, 12, 3));
     }

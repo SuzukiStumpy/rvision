@@ -93,6 +93,12 @@ impl Frame {
         self.active = active;
     }
 
+    /// Sets the maximised flag in place, mirroring [`set_active`](Self::set_active)
+    /// — a [`Window`](super::Window) calls this as it toggles zoom (ADR 0016).
+    pub fn set_maximized(&mut self, maximized: bool) {
+        self.maximized = maximized;
+    }
+
     /// Whether a `width`-wide frame is wide enough to draw the close/zoom glyphs.
     fn glyphs_shown(width: i16) -> bool {
         width >= 10
@@ -240,6 +246,17 @@ mod tests {
             "maximised shows the ↕ glyph"
         );
         assert!(!render(&maxed, 20, 3).contains('↑'));
+    }
+
+    #[test]
+    fn set_maximized_toggles_the_zoom_glyph_in_place() {
+        let mut frame = Frame::new("Doc", Style::new(), Style::new());
+        assert!(render(&frame, 20, 3).contains('↑'));
+        frame.set_maximized(true);
+        assert!(render(&frame, 20, 3).contains('↕'));
+        assert!(!render(&frame, 20, 3).contains('↑'));
+        frame.set_maximized(false);
+        assert!(render(&frame, 20, 3).contains('↑'));
     }
 
     #[test]

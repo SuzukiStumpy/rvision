@@ -72,6 +72,58 @@ pub trait View {
     fn set_focused(&mut self, focused: bool) {
         let _ = focused;
     }
+
+    /// What this view needs scrolled right now, or `None` if nothing does (ADR
+    /// 0015). Queried every draw, like [`drop_shadow`](Self::drop_shadow): a
+    /// composing owner (a [`Window`](crate::widgets::Window) first) reserves
+    /// and draws a border [`ScrollBar`](crate::widgets::ScrollBar) per axis
+    /// that needs one, and routes clicks/drags on it back through
+    /// [`set_scroll`](Self::set_scroll). A view that manages its own scroll
+    /// chrome (or doesn't scroll) keeps the default.
+    fn scroll_metrics(&self) -> Option<ScrollMetrics> {
+        None
+    }
+
+    /// Pushes a new scroll position an owner's chrome computed on this view's
+    /// behalf (ADR 0015), mirroring [`set_focused`](Self::set_focused)'s push
+    /// shape. The default ignores it.
+    fn set_scroll(&mut self, offset: Point) {
+        let _ = offset;
+    }
+
+    /// Whether it is currently OK to act on `command` (TurboVision's
+    /// `TView::valid`) — e.g. close, quit, zoom (ADR 0016). Default: always
+    /// OK. A view that needs to refuse (unsaved changes) can also post a
+    /// follow-up command through `ctx` in the same call — e.g. to ask its
+    /// owner to run a confirmation flow — and try again once that resolves.
+    /// A view never gets to run its own modal loop directly (ADR 0003): only
+    /// whoever owns a concrete `Application` can do that.
+    fn valid(&mut self, command: Command, ctx: &mut Context) -> bool {
+        let _ = (command, ctx);
+        true
+    }
+}
+
+/// What a scrollable view needs scrolled, per axis (ADR 0015).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrollMetrics {
+    /// The horizontal axis's range, or `None` if this view doesn't scroll
+    /// sideways.
+    pub horizontal: Option<AxisMetrics>,
+    /// The vertical axis's range, or `None` if this view doesn't scroll up/down.
+    pub vertical: Option<AxisMetrics>,
+}
+
+/// One axis's scroll range: `total` units, `visible` of them on screen at
+/// once, the first shown being `pos` (ADR 0015).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AxisMetrics {
+    /// The total number of scrollable units (rows, columns, ...).
+    pub total: usize,
+    /// How many are visible on screen at once.
+    pub visible: usize,
+    /// The index of the first unit currently shown.
+    pub pos: usize,
 }
 
 /// A [`View`] that can be run modally by
@@ -335,6 +387,17 @@ impl View for Group {
             self.children[index].set_focused(focused);
         }
     }
+
+    fn valid(&mut self, command: Command, ctx: &mut Context) -> bool {
+        // Fans out to every child, not just the focused one (ADR 0016,
+        // mirroring TurboVision's TGroup::valid) — a fold, not a
+        // short-circuiting `all()`, so two refusing children both get asked
+        // (and so both get the chance to post their own follow-up) rather
+        // than the second being skipped once the first has already refused.
+        self.children
+            .iter_mut()
+            .fold(true, |ok, child| child.valid(command, ctx) && ok)
+    }
 }
 
 #[cfg(test)]
@@ -342,7 +405,7 @@ mod tests {
     use super::*;
     use crate::buffer::Buffer;
     use crate::cell::Cell;
-    use crate::command::CM_OK;
+    use crate::command::{CM_CANCEL, CM_OK};
     use crate::event::{KeyEvent, Modifiers, MouseButton, MouseKind};
     use crate::geometry::Size;
     use std::cell::RefCell;
@@ -876,5 +939,173 @@ mod tests {
         let mut canvas = Canvas::new(&mut buf);
         group.draw(&mut canvas);
         insta::assert_snapshot!(buf.to_text());
+    }
+
+    // --- Scroll-chrome protocol (ADR 0015) ---
+
+    #[test]
+    fn a_plain_view_reports_no_scroll_metrics_and_ignores_set_scroll() {
+        let mut text = StaticText::new(rect(0, 0, 5, 1), "x", Style::new());
+        assert_eq!(text.scroll_metrics(), None);
+        text.set_scroll(Point::new(3, 4)); // no panic, no-op
+    }
+
+    /// A view that reports a fixed vertical range and records the last
+    /// `set_scroll` offset it was pushed.
+    struct Scrollable {
+        bounds: Rect,
+        metrics: Option<ScrollMetrics>,
+        pushed: Rc<RefCell<Option<Point>>>,
+    }
+
+    impl View for Scrollable {
+        fn bounds(&self) -> Rect {
+            self.bounds
+        }
+        fn draw(&self, _canvas: &mut Canvas) {}
+        fn scroll_metrics(&self) -> Option<ScrollMetrics> {
+            self.metrics
+        }
+        fn set_scroll(&mut self, offset: Point) {
+            *self.pushed.borrow_mut() = Some(offset);
+        }
+    }
+
+    #[test]
+    fn a_scrollable_view_reports_metrics_and_accepts_a_pushed_offset() {
+        let pushed = Rc::new(RefCell::new(None));
+        let metrics = ScrollMetrics {
+            horizontal: None,
+            vertical: Some(AxisMetrics {
+                total: 10,
+                visible: 4,
+                pos: 2,
+            }),
+        };
+        let mut view = Scrollable {
+            bounds: rect(0, 0, 5, 4),
+            metrics: Some(metrics),
+            pushed: Rc::clone(&pushed),
+        };
+        assert_eq!(view.scroll_metrics(), Some(metrics));
+        view.set_scroll(Point::new(0, 5));
+        assert_eq!(*pushed.borrow(), Some(Point::new(0, 5)));
+    }
+
+    // --- `valid` veto protocol (ADR 0016) ---
+
+    #[test]
+    fn a_plain_view_is_always_valid() {
+        let mut text = StaticText::new(rect(0, 0, 5, 1), "x", Style::new());
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(text.valid(CM_OK, &mut ctx));
+    }
+
+    /// A view that refuses one specific command, optionally posting a
+    /// follow-up command through `ctx` when it does.
+    struct Vetoer {
+        bounds: Rect,
+        refuses: Command,
+        follow_up: Option<Command>,
+        asked: Rc<RefCell<Vec<Command>>>,
+    }
+
+    impl View for Vetoer {
+        fn bounds(&self) -> Rect {
+            self.bounds
+        }
+        fn draw(&self, _canvas: &mut Canvas) {}
+        fn valid(&mut self, command: Command, ctx: &mut Context) -> bool {
+            self.asked.borrow_mut().push(command);
+            if command == self.refuses {
+                if let Some(follow_up) = self.follow_up {
+                    ctx.post(follow_up);
+                }
+                false
+            } else {
+                true
+            }
+        }
+    }
+
+    #[test]
+    fn a_refusing_view_can_post_a_follow_up_command() {
+        let asked = Rc::new(RefCell::new(Vec::new()));
+        let mut vetoer = Vetoer {
+            bounds: rect(0, 0, 5, 1),
+            refuses: CM_OK,
+            follow_up: Some(CM_CANCEL),
+            asked: Rc::clone(&asked),
+        };
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(!vetoer.valid(CM_OK, &mut ctx));
+        assert_eq!(ctx.posted(), &[Event::Command(CM_CANCEL)]);
+    }
+
+    #[test]
+    fn group_valid_is_true_when_every_child_agrees() {
+        let log: Log = Log::default();
+        let mut group = Group::new(
+            rect(0, 0, 20, 10),
+            vec![
+                Probe::new(1, rect(0, 0, 5, 1), false, &log).boxed(),
+                Probe::new(2, rect(0, 1, 5, 1), false, &log).boxed(),
+            ],
+        );
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(group.valid(CM_OK, &mut ctx));
+    }
+
+    #[test]
+    fn one_refusing_child_makes_the_whole_group_refuse() {
+        let mut group = Group::new(
+            rect(0, 0, 20, 10),
+            vec![Box::new(Vetoer {
+                bounds: rect(0, 0, 5, 1),
+                refuses: CM_OK,
+                follow_up: None,
+                asked: Rc::new(RefCell::new(Vec::new())),
+            })],
+        );
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(!group.valid(CM_OK, &mut ctx));
+    }
+
+    #[test]
+    fn every_child_is_asked_even_after_one_refuses() {
+        // Not a short-circuiting `all()`: two refusing children both get the
+        // chance to post their own follow-up in the same pass.
+        let asked_a: Rc<RefCell<Vec<Command>>> = Rc::new(RefCell::new(Vec::new()));
+        let asked_b: Rc<RefCell<Vec<Command>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut group = Group::new(
+            rect(0, 0, 20, 10),
+            vec![
+                Box::new(Vetoer {
+                    bounds: rect(0, 0, 5, 1),
+                    refuses: CM_OK,
+                    follow_up: None,
+                    asked: Rc::clone(&asked_a),
+                }),
+                Box::new(Vetoer {
+                    bounds: rect(0, 1, 5, 1),
+                    refuses: CM_OK,
+                    follow_up: None,
+                    asked: Rc::clone(&asked_b),
+                }),
+            ],
+        );
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(!group.valid(CM_OK, &mut ctx));
+        assert_eq!(*asked_a.borrow(), vec![CM_OK], "the first child was asked");
+        assert_eq!(
+            *asked_b.borrow(),
+            vec![CM_OK],
+            "the second child was asked too, not skipped"
+        );
     }
 }

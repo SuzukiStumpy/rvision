@@ -1,0 +1,8 @@
+---
+source: src/widgets/list_box.rs
+assertion_line: 432
+expression: "render(&lb, 12, 3)"
+---
+alpha       
+beta        
+gamma

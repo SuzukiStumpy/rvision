@@ -11,6 +11,12 @@
 //!
 //! Directory listing is read through an injected closure (real `std::fs` by
 //! default), so navigation is testable without touching the filesystem.
+//!
+//! The embedded [`ListBox`] no longer draws or hit-tests its own scroll bar
+//! (ADR 0015): `FileDialog` hosts one in the column it already reserves,
+//! querying [`View::scroll_metrics`] and routing hits back through
+//! [`View::set_scroll`] — the second, non-`Window` proof of the protocol
+//! alongside `ListBox` itself.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -24,7 +30,7 @@ use crate::geometry::{Point, Rect, Size};
 use crate::theme::{Role, Theme};
 use crate::view::{Context, Modal, View};
 
-use super::{Button, InputLine, ListBox};
+use super::{Button, InputLine, ListBox, ScrollBar, ScrollPart};
 
 /// One directory entry: a name and whether it is a sub-directory.
 #[derive(Clone)]
@@ -164,6 +170,66 @@ impl FileDialog {
         }
     }
 
+    /// The scroll bar hosting the list's overflow, if it currently has any
+    /// (ADR 0015) — positioned in the list's own local coordinates, along its
+    /// rightmost column.
+    fn list_scroll_bar(&self) -> Option<ScrollBar> {
+        let vertical = self.list.scroll_metrics()?.vertical?;
+        let bounds = self.list.bounds();
+        let column = Rect::from_origin_size(
+            Point::new(bounds.width() - 1, 0),
+            Size::new(1, bounds.height()),
+        );
+        let mut bar = ScrollBar::new(column, self.style);
+        bar.set_metrics(vertical.total, vertical.visible, vertical.pos);
+        Some(bar)
+    }
+
+    /// Scrolls the list by `delta` rows (negative = up), clamped, via the
+    /// scroll protocol (`View::set_scroll`) rather than reaching into it.
+    fn scroll_list_by(&mut self, delta: isize) {
+        let Some(vertical) = self.list.scroll_metrics().and_then(|m| m.vertical) else {
+            return;
+        };
+        let max_top = vertical.total.saturating_sub(vertical.visible) as isize;
+        let new_top = (vertical.pos as isize + delta).clamp(0, max_top);
+        self.list.set_scroll(Point::new(0, new_top as i16));
+    }
+
+    /// If `local` (in the list's own local coordinates) is a press/double-click
+    /// landing on the hosted scroll bar, scrolls accordingly and reports `true`
+    /// — the caller skips forwarding the event into the list itself. `false`
+    /// means "not a bar hit," including when the list has no bar to hit.
+    fn handle_list_bar_hit(&mut self, local: Point, kind: MouseKind) -> bool {
+        if !matches!(
+            kind,
+            MouseKind::Down(MouseButton::Left) | MouseKind::DoubleClick(MouseButton::Left)
+        ) {
+            return false;
+        }
+        let Some(bar) = self.list_scroll_bar() else {
+            return false;
+        };
+        let Some(part) = bar.hit(local) else {
+            return false;
+        };
+        let visible = self
+            .list
+            .scroll_metrics()
+            .and_then(|m| m.vertical)
+            .map(|v| v.visible)
+            .unwrap_or(1);
+        let page = visible.max(1) as isize;
+        match part {
+            ScrollPart::LineUp => self.scroll_list_by(-1),
+            ScrollPart::LineDown => self.scroll_list_by(1),
+            ScrollPart::PageUp => self.scroll_list_by(-page),
+            ScrollPart::PageDown => self.scroll_list_by(page),
+            ScrollPart::Thumb => {} // dragging the thumb rides on window drag infra (Phase 9d)
+        }
+        true
+    }
+
     /// `Enter`: navigate into a directory, accept a file/typed path, or
     /// activate the focused button.
     fn on_enter(&mut self, ctx: &mut Context) -> EventResult {
@@ -242,13 +308,18 @@ impl FileDialog {
             self.apply_focus();
         }
         let b = bounds[i];
+        let local_pos = p.offset(-b.origin().x, -b.origin().y);
         let local = Event::Mouse(MouseEvent {
-            pos: p.offset(-b.origin().x, -b.origin().y),
+            pos: local_pos,
             ..*m
         });
         match i {
             FOCUS_LIST => {
-                let result = self.list.handle_event(&local, ctx);
+                let result = if self.handle_list_bar_hit(local_pos, m.kind) {
+                    EventResult::Consumed
+                } else {
+                    self.list.handle_event(&local, ctx)
+                };
                 self.sync_input_from_list();
                 // A double-click on the list is "select and accept": run the same
                 // navigate-into-a-directory / open-a-file path as Enter (ADR 0007).
@@ -325,14 +396,20 @@ impl View for FileDialog {
         let mut sub = canvas.child(interior);
         sub.put_str(Point::new(0, 0), "Name:", self.style);
         sub.put_str(Point::new(0, 3), "Files:", self.style);
-        for control in [
-            &self.input as &dyn View,
-            &self.list,
-            &self.open,
-            &self.cancel,
-        ] {
+        for control in [&self.input as &dyn View, &self.open, &self.cancel] {
             let mut child = sub.child(control.bounds());
             control.draw(&mut child);
+        }
+        {
+            let mut child = sub.child(self.list.bounds());
+            self.list.draw(&mut child);
+            // Host the list's scroll bar in the column it draws over, if it
+            // currently has overflow to show (ADR 0015) — drawn last so it
+            // sits on top of whatever the list painted underneath.
+            if let Some(bar) = self.list_scroll_bar() {
+                let mut bar_canvas = child.child(bar.bounds());
+                bar.draw(&mut bar_canvas);
+            }
         }
     }
 
@@ -423,6 +500,30 @@ mod tests {
             "Open",
             &Theme::default(),
             fake_reader(),
+        )
+    }
+
+    /// A fake filesystem with more files than the list's rows can show at
+    /// once, so its embedded `ListBox` reports scroll overflow (ADR 0015).
+    fn fake_reader_many() -> Reader {
+        Box::new(|path: &Path| {
+            if path == Path::new("/many") {
+                (0..15)
+                    .map(|i| entry(&format!("f{i:02}.txt"), false))
+                    .collect()
+            } else {
+                vec![]
+            }
+        })
+    }
+
+    fn dialog_with_many_files() -> FileDialog {
+        FileDialog::with_reader(
+            "Open",
+            PathBuf::from("/many"),
+            "Open",
+            &Theme::default(),
+            fake_reader_many(),
         )
     }
 
@@ -592,5 +693,66 @@ mod tests {
         let mut canvas = Canvas::new(&mut buf);
         d.draw(&mut canvas);
         insta::assert_snapshot!(buf.to_text());
+    }
+
+    // --- Hosting the embedded list's scroll bar (ADR 0015) ---
+
+    #[test]
+    fn a_short_listing_has_no_scroll_bar_to_host() {
+        let d = dialog(); // /root: only 4 entries, well under the list's rows
+        assert!(d.list_scroll_bar().is_none());
+    }
+
+    #[test]
+    fn a_long_listing_gets_a_hosted_scroll_bar() {
+        let d = dialog_with_many_files();
+        assert!(
+            d.list_scroll_bar().is_some(),
+            "15 entries overflow the list's visible rows"
+        );
+    }
+
+    #[test]
+    fn snapshot_file_dialog_with_scroll_bar() {
+        let d = dialog_with_many_files();
+        let mut buf = Buffer::new(d.size());
+        let mut canvas = Canvas::new(&mut buf);
+        d.draw(&mut canvas);
+        insta::assert_snapshot!(buf.to_text());
+    }
+
+    #[test]
+    fn clicking_the_hosted_bars_down_arrow_scrolls_without_selecting_or_navigating() {
+        let mut d = dialog_with_many_files();
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let before_dir = d.dir.clone();
+        let before_selection = d.list.selected();
+        let before_pos = d.list.scroll_metrics().unwrap().vertical.unwrap().pos;
+
+        // The bar sits in the list's rightmost column, its foot on the list's
+        // last visible row — both derived from the same rect the dialog lays
+        // the list out in, so this stays correct if that layout ever changes.
+        let bar = d.list_scroll_bar().expect("15 entries overflow 10 rows");
+        let bounds = d.list.bounds();
+        let foot = Point::new(bounds.width() - 1, bounds.height() - 1);
+        assert_eq!(bar.hit(foot), Some(ScrollPart::LineDown));
+        let list_origin = Point::new(1, 5); // interior (1,1) + list_rect origin (0,4)
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: foot.offset(list_origin.x, list_origin.y),
+            modifiers: Modifiers::NONE,
+        });
+
+        assert_eq!(d.handle_event(&click, &mut ctx), EventResult::Consumed);
+        let after_pos = d.list.scroll_metrics().unwrap().vertical.unwrap().pos;
+        assert_eq!(after_pos, before_pos + 1, "the down arrow scrolled by one");
+        assert_eq!(d.dir, before_dir, "a bar click never navigates");
+        assert_eq!(
+            d.list.selected(),
+            before_selection,
+            "a bar click never changes the selection"
+        );
+        assert!(ctx.posted().is_empty(), "and never posts a command");
     }
 }

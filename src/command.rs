@@ -23,6 +23,17 @@ pub const CM_NO: Command = Command(5);
 /// Open the help viewer (TurboVision's `cmHelp`). The framework standardises the
 /// id so the `Shell` and a bespoke app driver (e.g. the editor's) can share it.
 pub const CM_HELP: Command = Command(6);
+/// Close the active window (TurboVision's `cmClose`). `Window` posts this from
+/// its own close-glyph click; `Desktop` is what acts on it (ADR 0016).
+pub const CM_CLOSE: Command = Command(7);
+/// Maximise or restore the active window (TurboVision's `cmZoom`). `Window`
+/// posts this from its own zoom-glyph click; `Desktop` acts on it (ADR 0016).
+pub const CM_ZOOM: Command = Command(8);
+/// Cycle the active window forward (TurboVision's `cmNext`), acted on by
+/// `Desktop` (ADR 0016).
+pub const CM_NEXT: Command = Command(9);
+/// Cycle the active window backward, acted on by `Desktop` (ADR 0016).
+pub const CM_PREV: Command = Command(10);
 
 /// The first command id reserved for the **application**.
 ///
@@ -106,7 +117,9 @@ mod tests {
 
     #[test]
     fn standard_ids_are_distinct_and_non_zero() {
-        let ids = [CM_QUIT, CM_OK, CM_CANCEL, CM_YES, CM_NO, CM_HELP];
+        let ids = [
+            CM_QUIT, CM_OK, CM_CANCEL, CM_YES, CM_NO, CM_HELP, CM_CLOSE, CM_ZOOM, CM_NEXT, CM_PREV,
+        ];
         for id in ids {
             assert_ne!(id.0, 0, "id 0 is reserved for 'no command'");
         }
@@ -124,7 +137,9 @@ mod tests {
     fn standard_commands_sit_below_the_application_range() {
         // The framework's own commands live below CM_USER; apps number from there
         // up, so the two namespaces never collide (ADR 0003).
-        for id in [CM_QUIT, CM_OK, CM_CANCEL, CM_YES, CM_NO, CM_HELP] {
+        for id in [
+            CM_QUIT, CM_OK, CM_CANCEL, CM_YES, CM_NO, CM_HELP, CM_CLOSE, CM_ZOOM, CM_NEXT, CM_PREV,
+        ] {
             assert!(id.0 < CM_USER, "{id:?} must be a framework-reserved id");
         }
     }
