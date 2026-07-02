@@ -3,8 +3,9 @@
 - **Status:** Draft
 - **Phase:** post-extraction rework (SDI/MDI convergence)
 - **Related ADRs:** 0016 (unify `Window`/`Dialog`, dynamic desktop), 0015 (scroll
-  chrome protocol), 0011 (drop shadows), 0010 (`exec_view` + focus-aware
-  drawing), 0009 (`Shell`), 0007 (mouse), 0003/0004 (tree + dispatch)
+  chrome protocol), 0017 (resize propagation protocol), 0011 (drop shadows),
+  0010 (`exec_view` + focus-aware drawing), 0009 (`Shell`), 0007 (mouse),
+  0003/0004 (tree + dispatch)
 
 ## Purpose
 
@@ -83,7 +84,7 @@ impl Window {
     // Runtime mutation (existing style: plain setters).
     pub fn set_active(&mut self, active: bool);         // unchanged
     pub fn set_casts_shadow(&mut self, casts: bool);     // unchanged
-    pub fn set_bounds(&mut self, bounds: Rect);          // new: drag/resize
+    pub fn set_bounds(&mut self, bounds: Rect);          // drag/resize; propagates to the interior (ADR 0017)
     pub fn hide(&mut self);
     pub fn show(&mut self);
     pub fn toggle_zoom(&mut self, desktop_bounds: Rect); // fills/restores against the caller's area
@@ -177,6 +178,17 @@ impl FileDialogResult {
   Sets `casts_shadow(false)` while maximized (a shadow off the edge of the
   desktop is pointless — same reasoning `set_casts_shadow`'s doc already
   gives) and restores the prior shadow setting on restore.
+- **Resize propagation to the interior (ADR 0017).** Both `set_bounds` and
+  `toggle_zoom` call `self.interior.set_bounds(self.interior_bounds())`
+  immediately after updating `self.bounds` — the one and only place `Window`
+  tells its interior "your area changed." Most interiors ignore it (the
+  default `View::set_bounds` is a no-op); one that lays out a size-dependent
+  cache (e.g. [`HelpWindow`](help_window.md)'s composite `ListBox`+`HelpPane`
+  interior) overrides it to relayout and cascade to its own children. A
+  `Window` locked `.resizable(false)` (`FileDialog`, `MessageBox`) never
+  triggers the resize half of this in practice, but the zoom half still can —
+  those interiors just don't override `set_bounds`, so it's a no-op either
+  way.
 - **`MessageBox`.** Unchanged behaviour from `Dialog`-based `MessageBox`,
   rebuilt on `Window`: `.centered().resizable(false).zoomable(false)`, message
   lines + buttons as a `Group` interior, first button `.with_default`, every
@@ -220,7 +232,9 @@ impl FileDialogResult {
   only when the interior ignores it; a click in the scroll gutter calls
   `set_scroll` on the interior with the expected offset; `valid` delegates to
   (and returns) the interior's answer, including a refusal that also posts a
-  follow-up via `ctx`.
+  follow-up via `ctx`; `set_bounds` and `toggle_zoom` each call
+  `interior.set_bounds` with the new `interior_bounds()` (ADR 0017, via a fake
+  interior that records what it was told).
 - **FileDialog-specific:** unchanged tests from today (navigation, `..`,
   double-click accept, Tab cycling), rehomed onto the interior type;
   `FileDialogResult::path` reflects what the interior wrote after `CM_OK`.

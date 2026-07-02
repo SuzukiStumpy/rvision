@@ -2,7 +2,7 @@
 
 - **Status:** Done; `ListBox`'s scroll bar in progress (Draft) per ADR 0015
 - **Phase:** 5 (Dialogs & controls); scroll-protocol migration post-extraction
-- **Related ADRs:** 0003 (commands up / broadcasts down), 0004 (three-phase dispatch), 0005 (colour roles), 0008 (owner-relative coords + `Canvas`), 0010 (modal dialogs + focus-aware drawing), 0015 (scroll chrome per-view protocol)
+- **Related ADRs:** 0003 (commands up / broadcasts down), 0004 (three-phase dispatch), 0005 (colour roles), 0008 (owner-relative coords + `Canvas`), 0010 (modal dialogs + focus-aware drawing), 0015 (scroll chrome per-view protocol), 0017 (resize propagation per-view protocol)
 
 ## Purpose
 
@@ -79,12 +79,16 @@ impl ListBox {
     pub fn selected(&self) -> Option<usize>;
     pub fn selected_text(&self) -> Option<&str>;
 }
+impl ListBox {
+    pub fn set_bounds(&mut self, bounds: Rect);   // ADR 0017: resize, clamped+visible
+}
 impl View for ListBox {
     // focusable; arrows/PgUp/PgDn/Home/End move, scrolls to keep selection in view.
     // No longer owns a ScrollBar (ADR 0015): reports scroll_metrics/accepts
     // set_scroll instead — see Behaviour below.
     fn scroll_metrics(&self) -> Option<ScrollMetrics>;   // vertical axis only
     fn set_scroll(&mut self, offset: Point);             // sets `top`, clamped
+    fn set_bounds(&mut self, bounds: Rect);              // delegates to the inherent method above (ADR 0017)
 }
 ```
 
@@ -123,6 +127,10 @@ impl View for ListBox {
   ADR 0015's Consequences). The wheel (`ScrollUp`/`ScrollDown`) still pans
   `top` directly inside `ListBox`'s own `handle_event` — only the *bar*
   (build/draw/hit-test) moves to the host.
+  **Resize (ADR 0017):** `set_bounds` updates the stored bounds, clamps `top`
+  to what the new height can show, then re-runs the same "keep the selection
+  visible" logic `move_by`/`select` already use — exercised by
+  [`HelpWindow`](help_window.md)'s resizable topic-list column.
 - All controls clip to their canvas (ADR 0008) and degrade without panic for tiny
   bounds and empty content.
 

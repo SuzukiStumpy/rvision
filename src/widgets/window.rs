@@ -289,10 +289,14 @@ impl Window {
     }
 
     /// Repositions/resizes the window directly — a drag/resize session (owned
-    /// by [`Desktop`](super::Desktop)) or a zoom toggle calls this; `Window`
-    /// has no opinion about *why* its bounds changed.
+    /// by [`Desktop`](super::Desktop)) calls this; `Window` has no opinion
+    /// about *why* its bounds changed. Propagates the new
+    /// [`interior_bounds`](Self::interior_bounds) to the interior via
+    /// [`View::set_bounds`] (ADR 0017), so an interior whose layout depends
+    /// on its size (a wrapped, scrolled page) can relayout.
     pub fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = bounds;
+        self.interior.set_bounds(self.interior_bounds());
     }
 
     /// Toggles between the window's normal bounds and filling `desktop_bounds`
@@ -315,6 +319,9 @@ impl Window {
             }
         }
         self.frame.set_maximized(self.maximized);
+        // Same propagation set_bounds does (ADR 0017) — a zoom/restore is
+        // just another way the window's area changes.
+        self.interior.set_bounds(self.interior_bounds());
     }
 
     /// The scroll bar hosting the interior's vertical overflow, if it has any
@@ -1000,5 +1007,56 @@ mod tests {
         let mut ctx = Context::new(&cs);
         assert_eq!(w.handle_event(&click, &mut ctx), EventResult::Consumed);
         assert_eq!(*pushed.borrow(), vec![Point::new(0, 1)]);
+    }
+
+    // --- Resize propagation to the interior (ADR 0017) ---
+
+    /// An interior that records every `bounds` it's told about via `set_bounds`.
+    struct ResizeSpy {
+        seen: Rc<RefCell<Vec<Rect>>>,
+    }
+
+    impl View for ResizeSpy {
+        fn bounds(&self) -> Rect {
+            rect(0, 0, 100, 100)
+        }
+        fn draw(&self, _canvas: &mut Canvas) {}
+        fn set_bounds(&mut self, bounds: Rect) {
+            self.seen.borrow_mut().push(bounds);
+        }
+    }
+
+    #[test]
+    fn set_bounds_propagates_the_new_interior_area() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut w = plain(
+            rect(0, 0, 20, 8),
+            Box::new(ResizeSpy {
+                seen: Rc::clone(&seen),
+            }),
+        );
+        w.set_bounds(rect(2, 2, 30, 12));
+        assert_eq!(*seen.borrow(), vec![rect(1, 1, 28, 10)]);
+    }
+
+    #[test]
+    fn toggle_zoom_propagates_the_new_interior_area_each_way() {
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        let mut w = plain(
+            rect(2, 1, 20, 8),
+            Box::new(ResizeSpy {
+                seen: Rc::clone(&seen),
+            }),
+        );
+        let desktop_bounds = rect(0, 0, 80, 24);
+        w.toggle_zoom(desktop_bounds);
+        w.toggle_zoom(desktop_bounds);
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                rect(1, 1, 78, 22), // maximised: interior of the full desktop
+                rect(1, 1, 18, 6),  // restored: interior of the original bounds
+            ]
+        );
     }
 }

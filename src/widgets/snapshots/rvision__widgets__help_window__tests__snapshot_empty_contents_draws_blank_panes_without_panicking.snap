@@ -1,0 +1,11 @@
+---
+source: src/widgets/help_window.rs
+assertion_line: 482
+expression: buf.to_text()
+---
+                   │          
+                   │          
+                   │          
+                   │          
+                   │          
+                   │

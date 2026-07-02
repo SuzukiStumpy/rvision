@@ -13,6 +13,10 @@
 //! - Window ▸ Toggle Toolbox hides/shows a fixed, non-closable toolbox
 //!   window docked to the right — `Desktop::hide`/`show`, not `open`/`close`,
 //!   since it stays resident either way.
+//! - `F1` (or Help ▸ Contents) opens a resizable two-pane `HelpWindow` (ADR
+//!   0013/0017) — a topic list beside the selected topic's page; drag its
+//!   corner to resize and watch both panes relayout live. Reopening while
+//!   it's already up just raises it instead of stacking a second one.
 //! - `Alt-X` (or File ▸ Exit) quits; the terminal is always restored, even on
 //!   a panic, thanks to the RAII backend (ADR 0001).
 
@@ -32,10 +36,11 @@ use rvision::command::{
 use rvision::crossterm_backend::CrosstermBackend;
 use rvision::event::{Event, EventResult, KeyCode, KeyEvent, Modifiers};
 use rvision::geometry::{Point, Rect, Size};
+use rvision::help::HelpContents;
 use rvision::theme::{Role, Theme};
 use rvision::view::{Context, View};
 use rvision::widgets::{
-    Desktop, Menu, MenuBar, MenuItem, StatusItem, StatusLine, Window, WindowId,
+    Desktop, HelpWindow, Menu, MenuBar, MenuItem, StatusItem, StatusLine, Window, WindowId,
 };
 
 // Application command ids, numbered from the framework/app boundary (ADR
@@ -43,6 +48,34 @@ use rvision::widgets::{
 // framework-reserved command Desktop itself already acts on.
 const CM_NEW_WINDOW: Command = Command(CM_USER + 1);
 const CM_TOGGLE_TOOLBOX: Command = Command(CM_USER + 2);
+const CM_HELP: Command = Command(CM_USER + 3);
+
+/// A small hand-authored help document (ADR 0013) just to give the demo's
+/// `HelpWindow` something real to browse.
+const HELP_SOURCE: &str = "\
+@topic overview Overview
+This desktop hosts a handful of plain document windows plus a docked
+toolbox. Drag a title bar to move a window, or its bottom-right corner
+(marked \u{25e2}) to resize it. Clicking anywhere on a window raises it.
+
+@topic windows Windows
+Window > New Window opens another document, cascaded from the last one.
+Ctrl-W closes the active window; F5 zooms/restores it; F6 (or
+Window > Next/Previous) cycles focus between them.
+
+<pre>
+Ctrl+N   New Window
+Ctrl+W   Close
+F5       Zoom
+F6       Next
+F9       Toggle Toolbox
+</pre>
+
+@topic help This Help Window
+This window is itself resizable (ADR 0017): drag its corner and watch
+the topic list and this page relayout live, independently of each
+other. Tab moves focus between the list and the page.
+";
 
 fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
     Rect::from_origin_size(Point::new(x, y), Size::new(w, h))
@@ -79,6 +112,7 @@ struct Mdi {
     finished: bool,
     opened: u32,
     toolbox: WindowId,
+    help: Option<WindowId>,
 }
 
 impl Mdi {
@@ -115,6 +149,22 @@ impl Mdi {
         }
     }
 
+    /// Opens the demo's `HelpWindow` (ADR 0013/0017), or just raises it if
+    /// it's already up — `Desktop::window` returning `None` is how a closed
+    /// `WindowId` is told apart from a still-resident one.
+    fn open_help(&mut self) {
+        let desktop = self.shell.desktop_mut();
+        if let Some(id) = self.help {
+            if desktop.window(id).is_some() {
+                desktop.focus(id);
+                return;
+            }
+        }
+        let contents = HelpContents::parse(HELP_SOURCE);
+        let window = HelpWindow::build(contents, desktop.bounds(), "Help", &self.theme);
+        self.help = Some(desktop.open(window));
+    }
+
     /// Delivers one event to the shell, queueing whatever it posts.
     fn deliver(&mut self, event: &Event, queue: &mut VecDeque<Event>) -> EventResult {
         let mut ctx = Context::new(&self.commands);
@@ -141,6 +191,7 @@ impl Mdi {
                 }
                 Event::Command(cmd) if cmd == CM_NEW_WINDOW => self.open_new_window(),
                 Event::Command(cmd) if cmd == CM_TOGGLE_TOOLBOX => self.toggle_toolbox(),
+                Event::Command(cmd) if cmd == CM_HELP => self.open_help(),
                 _ => {
                     if budget == 0 {
                         break;
@@ -191,6 +242,10 @@ fn main() -> io::Result<()> {
                     MenuItem::new("Previous", CM_PREV).with_shortcut("Shift-F6"),
                     MenuItem::new("Toggle Toolbox", CM_TOGGLE_TOOLBOX).with_shortcut("F9"),
                 ],
+            ),
+            Menu::new(
+                "Help",
+                vec![MenuItem::new("Contents", CM_HELP).with_shortcut("F1")],
             ),
         ],
         &theme,
@@ -256,6 +311,12 @@ fn main() -> io::Result<()> {
                 CM_TOGGLE_TOOLBOX,
             ),
             StatusItem::new(
+                "F1",
+                "Help",
+                KeyEvent::new(KeyCode::F(1), Modifiers::NONE),
+                CM_HELP,
+            ),
+            StatusItem::new(
                 "Alt-X",
                 "Exit",
                 KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT),
@@ -274,6 +335,7 @@ fn main() -> io::Result<()> {
         finished: false,
         opened: 0,
         toolbox: toolbox_id,
+        help: None,
     };
     // Two starting windows, so there's immediately something to drag,
     // resize, and cycle between.

@@ -102,6 +102,16 @@ pub trait View {
         let _ = (command, ctx);
         true
     }
+
+    /// Tells this view its area changed — a resize (drag or a
+    /// [`Window`](crate::widgets::Window) propagating its own `set_bounds`),
+    /// a zoom/restore, or any other repositioning an owner decides to push
+    /// down (ADR 0017). The default is a no-op: only a view whose own layout
+    /// is a cached function of its size (wrapped lines, a scrolled-into-view
+    /// offset) needs to override it and recompute that cache.
+    fn set_bounds(&mut self, bounds: Rect) {
+        let _ = bounds;
+    }
 }
 
 /// What a scrollable view needs scrolled, per axis (ADR 0015).

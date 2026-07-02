@@ -356,6 +356,10 @@ impl View for HelpPane {
     fn set_focused(&mut self, focused: bool) {
         self.focused = focused;
     }
+
+    fn set_bounds(&mut self, bounds: Rect) {
+        self.set_bounds(bounds);
+    }
 }
 
 #[cfg(test)]
@@ -573,6 +577,20 @@ mod tests {
         assert_eq!(p.text_rows(), 3); // one row given to the bar
         click(&mut p, text_w - 1, 3);
         assert_eq!(p.left, 1, "the right arrow advances one column");
+    }
+
+    #[test]
+    fn set_bounds_via_the_view_trait_reaches_the_same_relayout_logic() {
+        // The inherent `set_bounds` (used directly by callers that hold a
+        // concrete `HelpPane`, e.g. `Application::exec_view`-style drivers)
+        // and the `View::set_bounds` override a `Window` calls through a
+        // `Box<dyn View>` (ADR 0017) must relayout identically.
+        let body = vec![Block::Preformatted(vec!["0123456789ABCDEFGHIJ".into()])];
+        let mut p = pane(8, 4, body);
+        assert!(p.needs_hbar);
+        let view: &mut dyn View = &mut p;
+        view.set_bounds(rect(20, 4));
+        assert!(!p.needs_hbar, "widened past the content, so no bar needed");
     }
 
     #[test]

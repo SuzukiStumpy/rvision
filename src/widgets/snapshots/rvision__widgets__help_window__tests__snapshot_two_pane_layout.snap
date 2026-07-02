@@ -1,0 +1,13 @@
+---
+source: src/widgets/help_window.rs
+assertion_line: 464
+expression: buf.to_text()
+---
+Introduction          │Welcome to the   
+Keyboard              │thing. This is   
+Mouse                 │the first, home  
+                      │topic.           
+                      │                 
+                      │                 
+                      │                 
+                      │

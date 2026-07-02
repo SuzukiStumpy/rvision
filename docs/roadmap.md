@@ -14,29 +14,31 @@ Carried over from `edit`'s backlog at the point of extraction. None of these are
 scheduled into a phase yet; roughly ordered by how much shared machinery they
 need.
 
-- **Framework windowing vs. `edit`'s bespoke windowing** *(needs its own
-  grilling)*. `edit` owns its documents and chrome concretely — its own MDI,
-  drag, resize, modal driver — instead of using `rvision`'s `Desktop`/`Window`,
-  because those wrap `Box<dyn View>` and acting on a concrete document behind
-  one would force a downcast or `Rc<RefCell>` (ADR 0003). Each step was locally
-  reasonable, but the result is **two windowing implementations**, and this
-  crate's has atrophied: no dynamic open/close, no drag in the widget itself.
-  The help system was the first feature to want a mature framework window (a
-  non-modal help window) and tripped over the gap — that's why a default
-  `HelpWindow` container is deferred (ADR 0013). Converging the two (IDs + a
-  registry? a window-kind enum? generics over the interior?) touches ADRs 0003,
-  0009, 0010 and the `Shell` design, so it deserves a dedicated grilling before
-  any code.
-- **`HelpWindow`.** A non-modal desktop window wrapping `HelpPane` + a topic
-  list, once the windowing question above is settled. Until then, consuming
-  applications build their own modal viewer (as `edit` does).
+- ~~**Framework windowing vs. `edit`'s bespoke windowing.**~~ Resolved by
+  ADR 0015 (scroll-chrome protocol) and ADR 0016 (unify `Window`/`Dialog`,
+  dynamic `Desktop`): `Desktop` now supports dynamic open/close, click-to-
+  front, drag, resize, hide/show, and keyboard window-cycling natively (see
+  [`docs/specs/desktop.md`](specs/desktop.md)). ADR 0016 deliberately stops
+  short of migrating `edit` itself — `edit` keeps its own bespoke MDI, pinned
+  to `rvision v0.1.0`, and can adopt the new `Desktop` at its own pace — but
+  the gap that blocked a framework-level `HelpWindow` is gone.
+- ~~**`HelpWindow`.**~~ Landed: a non-modal desktop window (`widgets::HelpWindow`)
+  composing a topic-list `ListBox` and a `HelpPane` side by side, opened via
+  `Desktop::open` (see [`docs/specs/help_window.md`](specs/help_window.md)).
+  Resizable, not just positioned — which surfaced and closed a real gap
+  (`Window` never told a resizable interior its area changed) fixed as its
+  own protocol, ADR 0017. `edit` still builds its own modal viewer for now
+  (nothing requires it to migrate).
 - **Full hypertext help.** The `{label|target}` link syntax is already reserved
   in the help markup (ADR 0013); the v1 parser keeps only the label. Making
-  links followable — jumping to another topic — is its own later phase.
+  links followable — jumping to another topic — is its own later phase, and
+  would extend `HelpWindow` to move the list selection when a link activates
+  (see that spec's Open Questions).
 - **Context-sensitive help.** `open_help`-style entry points already take a
   starting topic id; wiring real context-sensitivity (F1 opening the topic for
-  whatever currently has focus) is application-level, and also waits on the
-  windowing question.
+  whatever currently has focus) is application-level — `HelpWindow::build`
+  itself always starts on the home topic today (a deliberate v1 scope cut, see
+  [`docs/specs/help_window.md`](specs/help_window.md)'s Open Questions).
 - **Cascading menus (submenus).** A `MenuItem` that opens a nested pull-down
   instead of posting a command. Extends the `MenuBar` state machine (the open
   path becomes a stack) and the overlay draw + hit-testing (ADR 0009).

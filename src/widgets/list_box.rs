@@ -101,6 +101,16 @@ impl ListBox {
         }
     }
 
+    /// Repositions/resizes the list, keeping the selection visible and
+    /// clamping the scroll offset to what the new height can show (ADR 0017)
+    /// — the same relayout-on-resize shape as [`HelpPane::set_bounds`](super::HelpPane::set_bounds).
+    pub fn set_bounds(&mut self, bounds: Rect) {
+        self.bounds = bounds;
+        let max_top = self.items.len().saturating_sub(self.rows());
+        self.top = self.top.min(max_top);
+        self.ensure_visible();
+    }
+
     /// Scrolls the view by `delta` rows (negative = up) **without** moving the
     /// selection — the wheel and scroll bar pan the list. Clamped so the last
     /// screenful never scrolls off the bottom.
@@ -232,6 +242,10 @@ impl View for ListBox {
     fn set_scroll(&mut self, offset: Point) {
         let max_top = self.items.len().saturating_sub(self.rows());
         self.top = (offset.y.max(0) as usize).min(max_top);
+    }
+
+    fn set_bounds(&mut self, bounds: Rect) {
+        self.set_bounds(bounds);
     }
 }
 
@@ -433,5 +447,49 @@ mod tests {
     fn snapshot_list_full_width_no_bar_of_its_own() {
         let lb = list(12, 3, &["alpha", "beta", "gamma", "delta", "epsilon"]);
         insta::assert_snapshot!(render(&lb, 12, 3));
+    }
+
+    // --- Resize propagation (ADR 0017) ---
+
+    #[test]
+    fn set_bounds_updates_the_row_count() {
+        let mut lb = list(10, 3, &["a", "b", "c", "d", "e", "f"]);
+        assert_eq!(lb.rows(), 3);
+        lb.set_bounds(rect(10, 6));
+        assert_eq!(lb.rows(), 6);
+    }
+
+    #[test]
+    fn set_bounds_clamps_top_when_the_list_grows_past_its_scrolled_offset() {
+        let labels: Vec<String> = (0..20).map(|i| format!("L{i}")).collect();
+        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let mut lb = list(10, 5, &refs);
+        press(&mut lb, KeyCode::End); // scrolls to the bottom: top = 15
+        assert_eq!(lb.top, 15);
+        // Growing tall enough to show every item leaves nothing to scroll.
+        lb.set_bounds(rect(10, 20));
+        assert_eq!(lb.top, 0);
+    }
+
+    #[test]
+    fn set_bounds_keeps_the_selection_visible_when_the_list_shrinks() {
+        let labels: Vec<String> = (0..20).map(|i| format!("L{i}")).collect();
+        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let mut lb = list(10, 10, &refs);
+        lb.select(9);
+        assert_eq!(lb.top, 0, "item 9 already fit in 10 rows");
+        lb.set_bounds(rect(10, 3));
+        assert_eq!(
+            lb.top, 7,
+            "scrolled so item 9 is still the last visible row"
+        );
+    }
+
+    #[test]
+    fn set_bounds_via_the_view_trait_reaches_the_same_logic() {
+        let mut lb = list(10, 5, &["a", "b", "c", "d", "e", "f"]);
+        let view: &mut dyn View = &mut lb;
+        view.set_bounds(rect(10, 2));
+        assert_eq!(lb.rows(), 2);
     }
 }

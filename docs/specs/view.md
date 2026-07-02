@@ -1,8 +1,8 @@
 # Module spec: `rvision::view`
 
-- **Status:** Done; extended (Draft) for the ADR 0015/0016 protocols below
-- **Phase:** 3 (View system); scroll/valid protocols added post-extraction
-- **Related ADRs:** 0003 (retained tree, parent-owns-children, commands up / broadcasts down), 0004 (three-phase dispatch, `EventResult`), 0008 (owner-relative coords + `Canvas`), 0015 (scroll chrome protocol), 0016 (unify `Window`/`Dialog`, `valid` veto protocol, `Modal` trait removed)
+- **Status:** Done; extended (Draft) for the ADR 0015/0016/0017 protocols below
+- **Phase:** 3 (View system); scroll/valid/resize protocols added post-extraction
+- **Related ADRs:** 0003 (retained tree, parent-owns-children, commands up / broadcasts down), 0004 (three-phase dispatch, `EventResult`), 0008 (owner-relative coords + `Canvas`), 0015 (scroll chrome protocol), 0016 (unify `Window`/`Dialog`, `valid` veto protocol, `Modal` trait removed), 0017 (resize propagation protocol)
 
 ## Purpose
 
@@ -35,6 +35,11 @@ pub trait View {
     fn scroll_metrics(&self) -> Option<ScrollMetrics> { None }
     // An owner's scroll chrome pushing a new position it computed (ADR 0015).
     fn set_scroll(&mut self, offset: Point) { let _ = offset; }
+
+    // An owner telling this view its area changed — resize, zoom/restore
+    // (ADR 0017). Default no-op; only a view whose layout is a cached
+    // function of its size needs to override it.
+    fn set_bounds(&mut self, bounds: Rect) { let _ = bounds; }
 
     // Whether it is OK to act on `command` right now — TurboVision's
     // `TView::valid` (ADR 0016). Default: always OK. A view that must refuse
@@ -149,11 +154,13 @@ impl Group {
   implemented it, so the trait added indirection with nothing left to
   abstract over. `exec_view` now takes `&mut Window` directly — see
   [`window.md`](window.md), [`app.md`](app.md).
-- **Scroll chrome and the `valid` veto: resolved** as two more defaulted
-  `View` methods, same shape as `drop_shadow`/`set_focused` — see ADR 0015,
-  ADR 0016, and [`window.md`](window.md)/[`desktop.md`](desktop.md) for where
-  they're actually consumed (`Window` hosts scroll chrome; `Window`/`Group`/
-  `Desktop` all implement `valid` fan-out or delegation).
+- **Scroll chrome, the `valid` veto, and resize propagation: resolved** as
+  defaulted `View` methods, same shape as `drop_shadow`/`set_focused` — see
+  ADR 0015, ADR 0016, ADR 0017, and [`window.md`](window.md)/
+  [`desktop.md`](desktop.md) for where they're actually consumed (`Window`
+  hosts scroll chrome and propagates `set_bounds` to its interior on resize/
+  zoom; `Window`/`Group`/`Desktop` all implement `valid` fan-out or
+  delegation).
 - **Integer view IDs** (ADR 0003) for targeted messages: not needed for bubbling
   or Tab traversal; add when a command must address a specific view.
 - **Cross-group Tab boundary**: focus currently wraps within a group; handing off
