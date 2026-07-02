@@ -1,5 +1,6 @@
 ---
-source: crates/rvision/src/app.rs
+source: src/app.rs
+assertion_line: 900
 expression: frame.to_text()
 ---
  File  Edit                             
@@ -9,6 +10,6 @@ expression: frame.to_text()
 ░░║                            ║░░░░░░░░
 ░░║                            ║░░░░░░░░
 ░░║                            ║░░░░░░░░
-░░╚════════════════════════════╝░░░░░░░░
+░░╚════════════════════════════◢░░░░░░░░
 ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░
  F1 Help  Alt-X Exit

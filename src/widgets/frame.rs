@@ -52,6 +52,12 @@ const ZOOM: &str = "[↑]";
 /// is unchanged.
 const ZOOM_MAXIMIZED: &str = "[↕]";
 
+/// The resize-handle glyph drawn in the bottom-right corner in place of the
+/// plain border corner when the frame is resizable — a purely visual
+/// affordance (`Desktop` already treats that corner as the resize grab point
+/// regardless of what's drawn there, ADR 0016).
+const RESIZE_HANDLE: char = '◢';
+
 /// A window frame: border, centred title, and close/zoom glyphs.
 pub struct Frame {
     title: String,
@@ -59,6 +65,7 @@ pub struct Frame {
     maximized: bool,
     closable: bool,
     zoomable: bool,
+    resizable: bool,
     style: Style,
     title_style: Style,
 }
@@ -74,6 +81,7 @@ impl Frame {
             maximized: false,
             closable: true,
             zoomable: true,
+            resizable: true,
             style,
             title_style,
         }
@@ -105,6 +113,16 @@ impl Frame {
         self
     }
 
+    /// Sets whether the bottom-right corner shows a resize-handle glyph in
+    /// place of the plain border corner (default `true`) — purely visual;
+    /// the corner is always the resize grab point regardless of what's drawn
+    /// there (`Desktop` decides that from the window's own `resizable` flag,
+    /// ADR 0016).
+    pub fn resizable(mut self, resizable: bool) -> Self {
+        self.resizable = resizable;
+        self
+    }
+
     /// Sets the closable flag in place, mirroring [`set_active`](Self::set_active).
     pub fn set_closable(&mut self, closable: bool) {
         self.closable = closable;
@@ -113,6 +131,11 @@ impl Frame {
     /// Sets the zoomable flag in place, mirroring [`set_active`](Self::set_active).
     pub fn set_zoomable(&mut self, zoomable: bool) {
         self.zoomable = zoomable;
+    }
+
+    /// Sets the resizable flag in place, mirroring [`set_active`](Self::set_active).
+    pub fn set_resizable(&mut self, resizable: bool) {
+        self.resizable = resizable;
     }
 
     /// Sets the active flag in place — the desktop calls this through its
@@ -225,9 +248,14 @@ impl Frame {
             Point::new(left, bottom),
             Cell::from_char(g.bottom_left, self.style),
         );
+        let bottom_right = if self.resizable {
+            RESIZE_HANDLE
+        } else {
+            g.bottom_right
+        };
         canvas.set(
             Point::new(right, bottom),
-            Cell::from_char(g.bottom_right, self.style),
+            Cell::from_char(bottom_right, self.style),
         );
     }
 }
@@ -292,6 +320,34 @@ mod tests {
         assert!(!render(&frame, 20, 3).contains('↑'));
         frame.set_maximized(false);
         assert!(render(&frame, 20, 3).contains('↑'));
+    }
+
+    #[test]
+    fn resizable_frame_shows_a_handle_in_the_bottom_right_corner() {
+        let frame = Frame::new("Doc", Style::new(), Style::new());
+        let rows: Vec<String> = render(&frame, 20, 5).lines().map(str::to_string).collect();
+        assert_eq!(rows[4].chars().last(), Some('◢'));
+    }
+
+    #[test]
+    fn a_non_resizable_frame_keeps_a_plain_corner() {
+        let frame = Frame::new("Doc", Style::new(), Style::new()).resizable(false);
+        let rows: Vec<String> = render(&frame, 20, 5).lines().map(str::to_string).collect();
+        assert_eq!(
+            rows[4].chars().last(),
+            Some('┘'),
+            "plain single-line corner"
+        );
+    }
+
+    #[test]
+    fn set_resizable_toggles_the_corner_handle_in_place() {
+        let mut frame = Frame::new("Doc", Style::new(), Style::new());
+        assert!(render(&frame, 20, 5).contains('◢'));
+        frame.set_resizable(false);
+        assert!(!render(&frame, 20, 5).contains('◢'));
+        frame.set_resizable(true);
+        assert!(render(&frame, 20, 5).contains('◢'));
     }
 
     #[test]

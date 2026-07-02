@@ -137,9 +137,13 @@ impl Window {
         self
     }
 
-    /// Sets whether a corner drag can resize the window (default `true`).
+    /// Sets whether a corner drag can resize the window (default `true`) —
+    /// also tells the frame whether to draw the resize-handle affordance in
+    /// the bottom-right corner, so a locked-size window doesn't invite a drag
+    /// that won't do anything (ADR 0016).
     pub fn resizable(mut self, yes: bool) -> Self {
         self.resizable = yes;
+        self.frame.set_resizable(yes);
         self
     }
 
@@ -726,6 +730,21 @@ mod tests {
         assert!(!locked.is_resizable());
         assert!(!locked.is_closable());
         assert!(!locked.is_zoomable());
+    }
+
+    #[test]
+    fn resizable_flag_reaches_the_frames_corner_handle() {
+        let w = plain(rect(0, 0, 20, 5), blank());
+        let mut buf = Buffer::new(Size::new(20, 5));
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        assert!(buf.to_text().contains('◢'), "resizable by default");
+
+        let locked = plain(rect(0, 0, 20, 5), blank()).resizable(false);
+        let mut buf = Buffer::new(Size::new(20, 5));
+        let mut canvas = Canvas::new(&mut buf);
+        locked.draw(&mut canvas);
+        assert!(!buf.to_text().contains('◢'), "no handle when locked");
     }
 
     #[test]

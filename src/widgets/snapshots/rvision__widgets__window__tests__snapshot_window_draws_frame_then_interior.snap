@@ -1,9 +1,10 @@
 ---
-source: crates/rvision/src/widgets/window.rs
+source: src/widgets/window.rs
+assertion_line: 634
 expression: buf.to_text()
 ---
 ┌─[■]──── Untitled ─────[↑]┐
 │hello                     │
 │                          │
 │                          │
-└──────────────────────────┘
+└──────────────────────────◢
