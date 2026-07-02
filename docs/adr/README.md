@@ -29,5 +29,7 @@ workspace from the start, so it kept its original number unchanged.
 | [0014](0014-documentation-process.md) | Full documentation process (ADRs, roadmap, module specs, rustdoc, CLAUDE.md) |
 | [0015](0015-scroll-chrome-per-view-protocol.md) | Scroll chrome is a per-view protocol (`scroll_metrics`/`set_scroll`) |
 | [0016](0016-unify-window-dialog-dynamic-desktop.md) | Unify `Window` and `Dialog`; a capable, dynamic desktop |
+| [0017](0017-resize-propagation-per-view-protocol.md) | Resize propagation is a per-view protocol (`View::set_bounds`) |
+| [0018](0018-cascading-menu-submenus.md) | Cascading menus: a path stack, right-anchored, item-level gating |
 
 New decision? Copy [`0000-template.md`](0000-template.md).

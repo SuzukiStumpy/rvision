@@ -39,9 +39,13 @@ need.
   whatever currently has focus) is application-level — `HelpWindow::build`
   itself always starts on the home topic today (a deliberate v1 scope cut, see
   [`docs/specs/help_window.md`](specs/help_window.md)'s Open Questions).
-- **Cascading menus (submenus).** A `MenuItem` that opens a nested pull-down
-  instead of posting a command. Extends the `MenuBar` state machine (the open
-  path becomes a stack) and the overlay draw + hit-testing (ADR 0009).
+- ~~**Cascading menus (submenus).**~~ Landed: a `MenuItem::submenu` opens a
+  nested pull-down instead of posting a command, cascading to arbitrary depth.
+  The `MenuBar` state machine generalized `open: Option<usize>` + `highlight`
+  into a `path: Vec<usize>` stack; the overlay draws and hit-tests every open
+  level (ADR 0018, extending the ADR 0009 overlay). See
+  [`docs/specs/menu.md`](specs/menu.md) and the `chrome` example's File ▸
+  Export item.
 - **Right-click context menus.** A pull-down anchored at the pointer, populated
   per context. Reuses the `Menu` overlay and its open/closed/modal state
   machine; the trigger becomes a right-press hit-test rather than the menu bar.

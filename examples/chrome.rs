@@ -6,6 +6,8 @@
 //!
 //! - `Alt-F` / `Alt-E` / `Alt-S` (or `F10`) open a menu; `←`/`→` switch menus,
 //!   `↑`/`↓` move the highlight, `Enter` chooses, `Esc` closes.
+//! - File ▸ Export cascades into a submenu (ADR 0018): `→` or `Enter` opens it,
+//!   `←` or `Esc` backs out one level without closing the bar.
 //! - `Alt-X` (or File ▸ Exit) quits; the terminal is always restored, even on a
 //!   panic, thanks to the RAII backend (ADR 0001).
 //! - Resize the window: the menu bar, desktop, and status line relay out.
@@ -37,6 +39,8 @@ const CM_COPY: Command = Command(CM_USER + 5);
 const CM_PASTE: Command = Command(CM_USER + 6);
 const CM_FIND: Command = Command(CM_USER + 7);
 const CM_REPLACE: Command = Command(CM_USER + 8);
+const CM_EXPORT_PDF: Command = Command(CM_USER + 9);
+const CM_EXPORT_PNG: Command = Command(CM_USER + 10);
 
 fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
     Rect::from_origin_size(Point::new(x, y), Size::new(w, h))
@@ -82,6 +86,16 @@ fn main() -> io::Result<()> {
                     MenuItem::new("New", CM_NEW).with_shortcut("Ctrl-N"),
                     MenuItem::new("Open...", CM_OPEN).with_shortcut("Ctrl-O"),
                     MenuItem::new("Save", CM_SAVE).with_shortcut("Ctrl-S"),
+                    MenuItem::submenu(
+                        "Export",
+                        Menu::new(
+                            "Export",
+                            vec![
+                                MenuItem::new("PDF...", CM_EXPORT_PDF),
+                                MenuItem::new("PNG...", CM_EXPORT_PNG),
+                            ],
+                        ),
+                    ),
                     MenuItem::new("Exit", CM_QUIT).with_shortcut("Alt-X"),
                 ],
             ),

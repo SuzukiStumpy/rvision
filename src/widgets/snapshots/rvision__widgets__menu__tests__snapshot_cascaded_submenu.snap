@@ -1,0 +1,12 @@
+---
+source: src/widgets/menu.rs
+assertion_line: 1546
+expression: "render(&bar, 40, 8)"
+---
+ File                                   
+┌────────────────┐                      
+│ New     Ctrl-N │                      
+│ Export       ▸ │┌─────┐               
+└────────────────┘│ PDF │               
+                  │ PNG │               
+                  └─────┘

@@ -1,7 +1,8 @@
 # Module spec: `rvision::widgets`
 
-- **Status:** Done for the backdrop/status-line/menu-bar chrome here; `Window`
-  and `Desktop` themselves moved out to their own specs (Draft) — see below
+- **Status:** Done for the backdrop/status-line chrome here; `Window`,
+  `Desktop`, and `MenuBar`/`Menu`/`MenuItem` themselves moved out to their own
+  specs — see below
 - **Phase:** 4 (Application chrome) — kept current through Phases 5–6
 - **Related ADRs:** 0003 (retained tree, commands up / broadcasts down), 0004 (three-phase dispatch), 0005 (colour roles), 0008 (owner-relative coords + `Canvas`), 0009 (application shell + menu overlay)
 
@@ -12,14 +13,18 @@ like TurboVision — a desktop backdrop, framed windows, a status line, and a me
 bar with pull-downs. Reusable, editor-agnostic. These are the *furniture* around
 the focus-and-content widgets.
 
-**This file specs the backdrop/status-line/menu-bar chrome only.** `Window`
-and `Desktop` — originally chrome specced here too — moved to their own specs
-once ADR 0016 made them a dynamic MDI container absorbing `Dialog`:
+**This file specs the backdrop/status-line chrome only.** `Window`, `Desktop`,
+and `MenuBar` — originally chrome specced here too — moved to their own specs
+once they grew past "furniture":
 
 - **`Window`, `MessageBox`, `FileDialog`** (the framed box, and its modal
-  configurations) — see [`window.md`](window.md).
+  configurations) — see [`window.md`](window.md) (moved once ADR 0016 made
+  them a dynamic MDI container absorbing `Dialog`).
 - **`Desktop`** (the dynamic window stack: open/close/drag/resize/focus) —
   see [`desktop.md`](desktop.md).
+- **`MenuBar`, `Menu`, `MenuItem`** (the top bar and its cascading
+  pull-downs) — see [`menu.md`](menu.md) (moved once submenus grew its state
+  machine and overlay drawing past chrome-file size).
 - **Controls (Phase 5)** — `Label`, `Button`, `InputLine`, `CheckBox`,
   `RadioButtons`, `ListBox`/`ListViewer`, `ScrollBar`: see
   [`controls.md`](controls.md).
@@ -70,27 +75,9 @@ impl StatusLine {
 }
 impl View for StatusLine { /* a matching KeyEvent posts its (enabled) command */ }
 
-// --- MenuBar + Menu: titles across the top, pull-downs below ---
-pub struct MenuItem { label: String, command: Command, shortcut: Option<String>, hotkey: Option<char> }
-impl MenuItem {
-    pub fn new(label: &str, command: Command) -> Self;    // hotkey defaults to label's first letter
-    pub fn with_shortcut(self, shortcut: &str) -> Self;   // display-only label
-    pub fn with_hotkey(self, hotkey: char) -> Self;        // override, e.g. Save/Save As collision
-}
-pub struct Menu { title: String, items: Vec<MenuItem>, hotkey: Option<char> }
-impl Menu {
-    pub fn new(title: &str, items: Vec<MenuItem>) -> Self; // hotkey defaults to title's first letter
-    pub fn with_hotkey(self, hotkey: char) -> Self;         // override the Alt hot-key
-}
-pub struct MenuBar { bounds: Rect, menus: Vec<Menu>, open: Option<usize>, highlight: usize, .. }
-impl MenuBar {
-    pub fn new(bounds: Rect, menus: Vec<Menu>, theme: &Theme) -> Self;
-    pub fn set_bounds(&mut self, bounds: Rect);
-    pub fn is_open(&self) -> bool;
-    pub fn close(&mut self);
-    pub fn draw_overlay(&self, canvas: &mut Canvas);      // the pull-down, full-frame canvas
-}
-impl View for MenuBar { /* draws the bar; handle_event runs the menu state machine */ }
+// --- MenuBar, Menu, MenuItem: see menu.md ---
+// (moved out of this file once cascading submenus grew the state machine and
+// overlay drawing too large to stay chrome-file furniture)
 ```
 
 > The chrome constructors take their `bounds` because `app::Shell`/`edit::app`
@@ -115,25 +102,7 @@ impl View for MenuBar { /* draws the bar; handle_event runs the menu state machi
 - **StatusLine.** A `Key` whose code equals an item's `key` posts that item's
   command (enabled-gated by `Context`, ADR 0003) and is consumed; other events are
   ignored. Drawn left→right, each item's key glyph in `key_style`.
-- **MenuBar / Menu.** A small state machine (ADR 0009), no modal loop yet:
-  - *Closed:* consumes `Alt`+a title's hot-key (opens that menu) and `F10` (opens
-    the first menu). Every other event is ignored, so it never eats the editor's
-    keys.
-  - *Open:* modal — consumes every `Key`. `Left`/`Right` switch the open menu
-    (wrap), `Up`/`Down` move the highlight (wrap), `Enter` posts the highlighted
-    item's command and closes, a plain letter matching an item's hot-key posts
-    that item's command and closes (no `Up`/`Down` needed), `Esc` closes. A
-    disabled item's command is gated by `Context` (never posted); selecting it
-    (via `Enter` or its hot-key) still closes the menu like TV.
-  - Each `Menu`/`MenuItem`'s hot-key defaults to its title/label's first letter
-    (case-insensitive) and is highlighted in `Role::MenuHotkey`; the app overrides
-    it with `with_hotkey` once two items in the same menu would otherwise collide
-    (e.g. "Cut" and "Copy" both defaulting to `c`).
-  - The bar draws titles separated by spaces; the open title is highlighted.
-    `draw_overlay` draws the pull-down box under the open title with items, their
-    shortcuts right-aligned, the highlight in `MenuSelected`, disabled items in
-    `MenuDisabled` (with no hot-key highlight — a letter that can't be pressed
-    isn't singled out). The overlay is the shell's last draw, over the whole frame.
+- **MenuBar / Menu.** Specced separately — see [`menu.md`](menu.md).
 
 ## Collaborators
 
@@ -146,14 +115,10 @@ impl View for MenuBar { /* draws the bar; handle_event runs the menu state machi
 ## Test plan (write these first)
 
 - **Render (snapshot):** backdrop fill; an active/inactive frame with title +
-  glyphs; a status line; the menu bar closed and with one menu open (bar +
-  pull-down overlay). (`Window`/`Desktop` rendering: [`window.md`](window.md)/
-  [`desktop.md`](desktop.md).)
+  glyphs; a status line. (`Window`/`Desktop` rendering: [`window.md`](window.md)/
+  [`desktop.md`](desktop.md); `MenuBar` rendering: [`menu.md`](menu.md).)
 - **Interaction (scripted events):** status-line key posts the right command and a
-  disabled one does not; menu opens on `Alt`-letter/`F10`, `Left`/`Right` and
-  `Up`/`Down` move within wrap, `Enter` posts + closes, a hot-key letter posts +
-  closes without `Up`/`Down`, an unmatched letter is swallowed, `Esc` closes; a
-  closed menu bar ignores ordinary keys.
+  disabled one does not. (`MenuBar` interaction: [`menu.md`](menu.md).)
 - **Manual:** the `chrome` example on a real terminal (see [`shell.md`](shell.md)).
 
 ## Open questions
