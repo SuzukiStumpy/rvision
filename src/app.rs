@@ -494,6 +494,13 @@ impl View for Shell {
     fn focusable(&self) -> bool {
         true
     }
+
+    fn valid(&mut self, command: Command, ctx: &mut Context) -> bool {
+        // Delegates to the desktop's own fan-out (ADR 0016) so Root's
+        // CM_QUIT gate reaches every open window, not just the active one,
+        // without Root needing to know Shell or Desktop exist at all.
+        self.desktop.valid(command, ctx)
+    }
 }
 
 #[cfg(test)]
@@ -768,6 +775,40 @@ mod tests {
     }
 
     #[test]
+    fn a_refusing_root_view_leaves_cm_quit_unfinished() {
+        // Root's CM_QUIT gate (ADR 0016) — a view that vetoes leaves the loop
+        // running; one that agrees lets it through.
+        struct Gate {
+            refuses: bool,
+        }
+        impl View for Gate {
+            fn bounds(&self) -> Rect {
+                full(Size::new(4, 1))
+            }
+            fn draw(&self, _canvas: &mut Canvas) {}
+            fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
+                if matches!(event, Event::Key(k) if k.code == KeyCode::Char('q')) {
+                    ctx.post(CM_QUIT);
+                    return EventResult::Consumed;
+                }
+                EventResult::Ignored
+            }
+            fn valid(&mut self, command: Command, _ctx: &mut Context) -> bool {
+                command != CM_QUIT || !self.refuses
+            }
+        }
+        let quit_key = Event::Key(KeyEvent::new(KeyCode::Char('q'), Modifiers::NONE));
+
+        let mut refusing = Root::new(Box::new(Gate { refuses: true }));
+        refusing.handle_event(&quit_key);
+        assert!(!refusing.is_finished(), "a refusal leaves the loop running");
+
+        let mut agreeing = Root::new(Box::new(Gate { refuses: false }));
+        agreeing.handle_event(&quit_key);
+        assert!(agreeing.is_finished(), "agreeing lets CM_QUIT through");
+    }
+
+    #[test]
     fn application_runs_the_root_until_a_view_posts_cm_quit() {
         // End-to-end through the real loop: a key reaches the focused view, which
         // posts CM_QUIT; Root finishes; the loop exits after presenting.
@@ -934,6 +975,53 @@ mod tests {
 
         assert!(root.is_finished());
         assert!(app.terminal().presents() >= 1);
+    }
+
+    #[test]
+    fn shell_valid_delegates_to_the_desktop() {
+        // Regression: Shell must override valid() to forward to its Desktop,
+        // or Root's CM_QUIT gate silently never reaches any open window
+        // (ADR 0016) — the default View::valid is unconditionally true.
+        struct Vetoer {
+            refuses: bool,
+        }
+        impl View for Vetoer {
+            fn bounds(&self) -> Rect {
+                full(Size::new(4, 1))
+            }
+            fn draw(&self, _canvas: &mut Canvas) {}
+            fn valid(&mut self, command: Command, _ctx: &mut Context) -> bool {
+                command != CM_QUIT || !self.refuses
+            }
+        }
+        let theme = Theme::default();
+        let size = Size::new(20, 8);
+        let menu_bar = MenuBar::new(full(Size::new(20, 1)), vec![], &theme);
+        let mut desktop = Desktop::new(full(Size::new(20, 6)), Cell::default());
+        desktop.open(Window::new(
+            Rect::from_origin_size(Point::new(0, 0), Size::new(10, 4)),
+            "W",
+            &theme,
+            Box::new(Vetoer { refuses: true }),
+        ));
+        let status = StatusLine::new(
+            full(Size::new(20, 1)),
+            vec![],
+            theme.style(Role::StatusBar),
+            theme.style(Role::StatusKey),
+        );
+        let mut shell = Shell::new(size, menu_bar, desktop, status);
+
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(
+            !shell.valid(CM_QUIT, &mut ctx),
+            "the open window vetoes quitting"
+        );
+        assert!(
+            shell.valid(CM_OK, &mut ctx),
+            "the window only refuses CM_QUIT, so an unrelated command passes"
+        );
     }
 
     // --- exec_view: the modal dialog loop (Phase 5, ADR 0010) ---
