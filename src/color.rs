@@ -158,6 +158,12 @@ impl Attributes {
     pub const fn union(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
+
+    /// Flips every bit named by `flag`, leaving the rest untouched — the
+    /// theme editor's attribute checkboxes each toggle exactly one bit.
+    pub const fn toggle(self, flag: Self) -> Self {
+        Self(self.0 ^ flag.0)
+    }
 }
 
 impl BitOr for Attributes {
@@ -296,6 +302,16 @@ mod tests {
 
         // `union` is equivalent to the `|` operator.
         assert_eq!(Attributes::BOLD.union(Attributes::UNDERLINE), combo);
+    }
+
+    #[test]
+    fn toggle_flips_exactly_the_named_bit() {
+        let combo = Attributes::BOLD | Attributes::UNDERLINE;
+        // Toggling an absent bit sets it, without touching the others.
+        let with_dim = combo.toggle(Attributes::DIM);
+        assert!(with_dim.contains(Attributes::BOLD | Attributes::UNDERLINE | Attributes::DIM));
+        // Toggling it again clears it back to the original set.
+        assert_eq!(with_dim.toggle(Attributes::DIM), combo);
     }
 
     #[test]

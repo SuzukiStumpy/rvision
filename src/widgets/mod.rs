@@ -32,6 +32,7 @@ mod message_box;
 mod radio_buttons;
 mod scroll_bar;
 mod status;
+mod theme_editor;
 mod window;
 
 pub use background::Background;
@@ -52,4 +53,5 @@ pub use message_box::MessageBox;
 pub use radio_buttons::RadioButtons;
 pub use scroll_bar::{Orientation, ScrollBar, ScrollPart};
 pub use status::{StatusItem, StatusLine};
+pub use theme_editor::{ThemeEditor, ThemeEditorHandle};
 pub use window::{Placement, Window};

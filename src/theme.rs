@@ -90,6 +90,54 @@ impl Role {
 
     /// The number of roles.
     pub const COUNT: usize = Self::ALL.len();
+
+    /// This role's theme-file `snake_case` key (ADR 0025), e.g.
+    /// `Role::EditorText.key() == "editor_text"` — the inverse of the lookup
+    /// [`Theme::merge`] uses, and the label the theme editor's role list
+    /// shows. `ROLE_KEYS` is in `Role::ALL`/discriminant order, so this is a
+    /// direct index, not a search.
+    pub fn key(&self) -> &'static str {
+        ROLE_KEYS[*self as usize].1
+    }
+}
+
+/// (Role, theme-file key) pairs in `Role::ALL`/discriminant order — the
+/// single source of truth both [`role_from_key`] and [`Role::key`] read, so
+/// the two directions can never drift apart.
+const ROLE_KEYS: [(Role, &str); Role::COUNT] = [
+    (Role::DesktopBackground, "desktop_background"),
+    (Role::WindowFrame, "window_frame"),
+    (Role::WindowTitle, "window_title"),
+    (Role::WindowTitleInactive, "window_title_inactive"),
+    (Role::MenuBar, "menu_bar"),
+    (Role::MenuSelected, "menu_selected"),
+    (Role::MenuDisabled, "menu_disabled"),
+    (Role::MenuHotkey, "menu_hotkey"),
+    (Role::StatusBar, "status_bar"),
+    (Role::StatusKey, "status_key"),
+    (Role::ButtonNormal, "button_normal"),
+    (Role::ButtonFocused, "button_focused"),
+    (Role::EditorText, "editor_text"),
+    (Role::Selection, "selection"),
+    (Role::DialogBackground, "dialog_background"),
+    (Role::Input, "input"),
+    (Role::Shadow, "shadow"),
+    (Role::HelpLink, "help_link"),
+    (Role::SelectionInactive, "selection_inactive"),
+];
+
+/// One of a [`Style`]'s three theme-file fields (ADR 0025) — the granularity
+/// [`Theme::merge`] applies per-line, and the granularity the theme editor
+/// tracks "did the user actually touch this?" at for its diff-based save
+/// (ADR 0026).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Field {
+    /// The foreground colour.
+    Fg,
+    /// The background colour.
+    Bg,
+    /// The text attributes.
+    Attrs,
 }
 
 /// Resolves [`Role`]s to concrete [`Style`]s. Clone and [`Theme::with`] to
@@ -160,59 +208,66 @@ impl Theme {
         }
         self
     }
+
+    /// Renders `role`'s current `field` value as one theme-file line
+    /// (`"role_key.field = value"`), the inverse of one [`merge`](Self::merge)
+    /// line. The theme editor uses this to serialize only the fields a user
+    /// actually touched, rather than a full dump of every role (ADR 0026).
+    pub fn format_field(&self, role: Role, field: Field) -> String {
+        let style = self.style(role);
+        let (name, value) = match field {
+            Field::Fg => ("fg", color_to_value(style.fg)),
+            Field::Bg => ("bg", color_to_value(style.bg)),
+            Field::Attrs => ("attrs", attrs_to_value(style.attrs)),
+        };
+        format!("{}.{name} = {value}", role.key())
+    }
 }
 
-/// The `snake_case` theme-file key for each [`Role`] (ADR 0025). A
-/// hand-written table rather than a runtime `PascalCase`→`snake_case`
-/// conversion: `Role`'s 19 variants are fixed and small enough that a table
-/// is both cheaper and more obviously correct than a general algorithm.
+/// The [`Role`] named by a theme-file `snake_case` key (ADR 0025), the
+/// inverse of [`Role::key`]. A linear scan over `ROLE_KEYS`: 19 entries,
+/// parsed rarely (once per theme-file line), so there's no reason to
+/// duplicate it as a second, unindexed table just to get O(1) lookup here
+/// too.
 fn role_from_key(key: &str) -> Option<Role> {
-    match key {
-        "desktop_background" => Some(Role::DesktopBackground),
-        "window_frame" => Some(Role::WindowFrame),
-        "window_title" => Some(Role::WindowTitle),
-        "window_title_inactive" => Some(Role::WindowTitleInactive),
-        "menu_bar" => Some(Role::MenuBar),
-        "menu_selected" => Some(Role::MenuSelected),
-        "menu_disabled" => Some(Role::MenuDisabled),
-        "menu_hotkey" => Some(Role::MenuHotkey),
-        "status_bar" => Some(Role::StatusBar),
-        "status_key" => Some(Role::StatusKey),
-        "button_normal" => Some(Role::ButtonNormal),
-        "button_focused" => Some(Role::ButtonFocused),
-        "editor_text" => Some(Role::EditorText),
-        "selection" => Some(Role::Selection),
-        "dialog_background" => Some(Role::DialogBackground),
-        "input" => Some(Role::Input),
-        "shadow" => Some(Role::Shadow),
-        "help_link" => Some(Role::HelpLink),
-        "selection_inactive" => Some(Role::SelectionInactive),
-        _ => None,
-    }
+    ROLE_KEYS.iter().find(|(_, k)| *k == key).map(|(r, _)| *r)
 }
 
-/// The `snake_case` theme-file key for each [`Color16`] (ADR 0025), the same
-/// hand-written-table approach as [`role_from_key`].
+/// (Color16, theme-file key) pairs in `Color16::ALL`/discriminant order —
+/// the single source of truth both [`color16_from_key`] and [`color16_key`]
+/// read.
+const COLOR16_KEYS: [(Color16, &str); 16] = [
+    (Color16::Black, "black"),
+    (Color16::Blue, "blue"),
+    (Color16::Green, "green"),
+    (Color16::Cyan, "cyan"),
+    (Color16::Red, "red"),
+    (Color16::Magenta, "magenta"),
+    (Color16::Brown, "brown"),
+    (Color16::LightGray, "light_gray"),
+    (Color16::DarkGray, "dark_gray"),
+    (Color16::LightBlue, "light_blue"),
+    (Color16::LightGreen, "light_green"),
+    (Color16::LightCyan, "light_cyan"),
+    (Color16::LightRed, "light_red"),
+    (Color16::LightMagenta, "light_magenta"),
+    (Color16::Yellow, "yellow"),
+    (Color16::White, "white"),
+];
+
+/// The `snake_case` theme-file key for each [`Color16`] (ADR 0025), the
+/// inverse of [`color16_key`].
 fn color16_from_key(key: &str) -> Option<Color16> {
-    match key {
-        "black" => Some(Color16::Black),
-        "blue" => Some(Color16::Blue),
-        "green" => Some(Color16::Green),
-        "cyan" => Some(Color16::Cyan),
-        "red" => Some(Color16::Red),
-        "magenta" => Some(Color16::Magenta),
-        "brown" => Some(Color16::Brown),
-        "light_gray" => Some(Color16::LightGray),
-        "dark_gray" => Some(Color16::DarkGray),
-        "light_blue" => Some(Color16::LightBlue),
-        "light_green" => Some(Color16::LightGreen),
-        "light_cyan" => Some(Color16::LightCyan),
-        "light_red" => Some(Color16::LightRed),
-        "light_magenta" => Some(Color16::LightMagenta),
-        "yellow" => Some(Color16::Yellow),
-        "white" => Some(Color16::White),
-        _ => None,
-    }
+    COLOR16_KEYS
+        .iter()
+        .find(|(_, k)| *k == key)
+        .map(|(c, _)| *c)
+}
+
+/// The theme-file `snake_case` key for `color16` — direct index into
+/// `COLOR16_KEYS`, which is in `Color16::ALL`/discriminant order.
+fn color16_key(color16: Color16) -> &'static str {
+    COLOR16_KEYS[color16 as usize].1
 }
 
 /// Parses a theme-file colour value: `default`, a [`Color16`] `snake_case`
@@ -234,6 +289,28 @@ fn parse_color(value: &str) -> Option<Color> {
     color16_from_key(value).map(Color::Named)
 }
 
+/// Renders a [`Color`] as a theme-file value, the inverse of [`parse_color`]
+/// — used by [`Theme::format_field`] (ADR 0026).
+fn color_to_value(color: Color) -> String {
+    match color {
+        Color::Default => "default".to_string(),
+        Color::Named(c) => color16_key(c).to_string(),
+        Color::Rgb(r, g, b) => format!("rgb({r}, {g}, {b})"),
+    }
+}
+
+/// (Attributes flag, theme-file token) pairs, in the same bit order as their
+/// declaration — the single source of truth both [`attr_from_key`] and
+/// [`attrs_to_value`] read.
+const ATTR_KEYS: [(Attributes, &str); 6] = [
+    (Attributes::BOLD, "bold"),
+    (Attributes::DIM, "dim"),
+    (Attributes::ITALIC, "italic"),
+    (Attributes::UNDERLINE, "underline"),
+    (Attributes::REVERSE, "reverse"),
+    (Attributes::BLINK, "blink"),
+];
+
 /// Parses a theme-file `attrs` value: `none`, or a `|`-combined list of
 /// [`Attributes`] names (ADR 0025). Any unrecognised token invalidates the
 /// whole value — an attrs override is all-or-nothing per line.
@@ -248,17 +325,24 @@ fn parse_attrs(value: &str) -> Option<Attributes> {
     Some(attrs)
 }
 
-/// The theme-file token for each [`Attributes`] flag (ADR 0025).
+/// The theme-file token for each [`Attributes`] flag (ADR 0025), the inverse
+/// of [`attrs_to_value`].
 fn attr_from_key(key: &str) -> Option<Attributes> {
-    match key {
-        "bold" => Some(Attributes::BOLD),
-        "dim" => Some(Attributes::DIM),
-        "italic" => Some(Attributes::ITALIC),
-        "underline" => Some(Attributes::UNDERLINE),
-        "reverse" => Some(Attributes::REVERSE),
-        "blink" => Some(Attributes::BLINK),
-        _ => None,
+    ATTR_KEYS.iter().find(|(_, k)| *k == key).map(|(a, _)| *a)
+}
+
+/// Renders [`Attributes`] as a theme-file value, the inverse of
+/// [`parse_attrs`] — used by [`Theme::format_field`] (ADR 0026).
+fn attrs_to_value(attrs: Attributes) -> String {
+    if attrs.is_empty() {
+        return "none".to_string();
     }
+    ATTR_KEYS
+        .iter()
+        .filter(|(flag, _)| attrs.contains(*flag))
+        .map(|(_, key)| *key)
+        .collect::<Vec<_>>()
+        .join("|")
 }
 
 impl Default for Theme {
@@ -474,5 +558,77 @@ mod tests {
         assert_eq!(t.style(Role::EditorText).fg, Color::Named(Color16::Blue));
         // ...but the first layer's bg survives untouched.
         assert_eq!(t.style(Role::EditorText).bg, Color::Named(Color16::Black));
+    }
+
+    // --- Role::key / role_from_key round trip (ADR 0026) ---
+
+    #[test]
+    fn role_key_round_trips_through_role_from_key_for_every_role() {
+        for role in Role::ALL {
+            assert_eq!(role_from_key(role.key()), Some(role));
+        }
+    }
+
+    // --- Theme::format_field (ADR 0026) ---
+
+    #[test]
+    fn format_field_renders_named_default_and_rgb_colors() {
+        let t = Theme::default()
+            .with(
+                Role::EditorText,
+                Style::new().fg(Color::Named(Color16::LightGray)),
+            )
+            .with(Role::Selection, Style::new().bg(Color::Default))
+            .with(Role::Input, Style::new().fg(Color::Rgb(30, 30, 46)));
+
+        assert_eq!(
+            t.format_field(Role::EditorText, Field::Fg),
+            "editor_text.fg = light_gray"
+        );
+        assert_eq!(
+            t.format_field(Role::Selection, Field::Bg),
+            "selection.bg = default"
+        );
+        assert_eq!(
+            t.format_field(Role::Input, Field::Fg),
+            "input.fg = rgb(30, 30, 46)"
+        );
+    }
+
+    #[test]
+    fn format_field_renders_attrs_none_and_combinations() {
+        let t = Theme::default()
+            .with(Role::WindowTitle, Style::new().attrs(Attributes::NONE))
+            .with(
+                Role::Selection,
+                Style::new().attrs(Attributes::BOLD | Attributes::UNDERLINE),
+            );
+
+        assert_eq!(
+            t.format_field(Role::WindowTitle, Field::Attrs),
+            "window_title.attrs = none"
+        );
+        assert_eq!(
+            t.format_field(Role::Selection, Field::Attrs),
+            "selection.attrs = bold|underline"
+        );
+    }
+
+    #[test]
+    fn format_field_round_trips_through_merge() {
+        for (role, field) in [
+            (Role::EditorText, Field::Fg),
+            (Role::EditorText, Field::Bg),
+            (Role::Selection, Field::Attrs),
+        ] {
+            let base = Theme::default();
+            let line = base.format_field(role, field);
+            let merged = Theme::default().merge(&line);
+            assert_eq!(
+                merged.format_field(role, field),
+                base.format_field(role, field),
+                "round-tripping {line:?} through merge changed the field"
+            );
+        }
     }
 }

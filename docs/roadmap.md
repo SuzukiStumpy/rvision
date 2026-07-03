@@ -166,8 +166,39 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      `Named` vs. `Rgb` on accept. `ColorPicker::pick()` wraps it in the usual
      centred, Esc-cancels `Window`, mirroring `FileDialog`. Wired into the
      `dialogs` example. See [`docs/specs/color_picker.md`](specs/color_picker.md)
-     (manual terminal pass still open). The theme picker and theme editor
-     sub-items remain blocked as scoped above.
+     — manual terminal pass done while building the theme editor below
+     (ADR 0026, which drives this via mouse): found and fixed a bug where
+     clicking *OK* posted `CM_OK` via the plain `Button` widget without ever
+     calling `ColorPicker::accept`, so the result handle stayed at its
+     never-set `Color::Default` regardless of the selected swatch — only
+     `Enter` updated it correctly. The theme picker sub-item remains blocked
+     as scoped above.
+   - ~~Theme editor.~~ Landed 2026-07-03:
+     [`widgets::ThemeEditor`](../src/widgets/theme_editor.rs) — browse all 19
+     `Role`s in a list, edit the selected one's foreground/background via a
+     nested `ColorPicker` and its attributes via checkboxes, then save.
+     Tracks exactly which fields were touched and serializes only those via
+     `Theme::format_field` (a diff against the starting theme, not a full
+     19-role dump, per this item's earlier open question — resolved in
+     favour of the diff). Hosted as an ordinary `Desktop` window (chrome
+     locked to read as a dialog) rather than run via `exec_view`, since a
+     `View` can't open the nested `ColorPicker` itself — see ADR 0026 for the
+     composition mechanism (a bubbled `CM_EDIT_FG`/`CM_EDIT_BG`, and a
+     read/write `ThemeEditorHandle` generalizing `ColorPickerResult`'s
+     read-only idiom). See
+     [`docs/specs/theme_editor.md`](specs/theme_editor.md) and the
+     `theme_editor` example — manual terminal pass done: colour edits and
+     attribute toggles reflect immediately, the selected role stays
+     highlighted while focus is on Foreground/Background/Save/Cancel, and a
+     saved diff round-trips through `rvision::resource` on the next run —
+     including the example's *own* chrome (Desktop backdrop, the editor's own
+     window/list/buttons), which loads and merges the saved layer at startup
+     the same way a real application would, not just the value being edited.
+     Also gained a **Restore Defaults** control (hand-drawn/hand-dispatched
+     like `ColorPicker`'s mode toggle, posting no command): resets the whole
+     session to the framework default in one step, marking touched only the
+     fields that actually need an override to win back over `base` — a panic
+     button, not a per-role undo.
 3. **Utility programs.** Help authoring tool; theme builder; possibly more.
    - Scoped 2026-07-03: the theme builder is a developer-facing tool for
      authoring a theme to ship *with* an application, most likely a thin
@@ -175,6 +206,13 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      the app-defaults resource layer (ADR 0024) instead of the user layer
      the in-app editor writes to by default. Same editing surface, two
      different output layers — see #2's scoping note.
+   - ~~Theme builder.~~ Landed 2026-07-03: `examples/theme_builder.rs` — the
+     same driving loop as the `theme_editor` example, seeded from
+     `Theme::default()` alone (no user layer beneath the app layer) and
+     saved with a bare `fs::write` to a CLI-supplied app-resources
+     directory, exactly per this item's own scoping note. Some driving-loop
+     duplication between the two examples is accepted deliberately
+     (application glue, not library code).
    - Scoped 2026-07-03: the help authoring tool needs no new format — ADR
      0013 already designed the `parse(&str) -> HelpContents` boundary
      specifically so a future authoring tool could target it, and the

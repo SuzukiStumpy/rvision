@@ -34,6 +34,15 @@ pub const CM_ZOOM: Command = Command(8);
 pub const CM_NEXT: Command = Command(9);
 /// Cycle the active window backward, acted on by `Desktop` (ADR 0016).
 pub const CM_PREV: Command = Command(10);
+/// Request that the currently-selected foreground colour be edited via a
+/// nested `ColorPicker` (`widgets::ThemeEditor`, ADR 0026). A `View` hosted
+/// on a `Desktop` can't open another window itself (ADR 0003: commands only
+/// bubble up); this is the standard signal for "please open one for me" that
+/// a hosting `Program` intercepts, mirroring how it already intercepts its
+/// own app-specific commands (see `examples/mdi.rs`'s `Mdi::dispatch`).
+pub const CM_EDIT_FG: Command = Command(11);
+/// As `CM_EDIT_FG`, for the background colour.
+pub const CM_EDIT_BG: Command = Command(12);
 
 /// The first command id reserved for the **application**.
 ///
@@ -119,6 +128,7 @@ mod tests {
     fn standard_ids_are_distinct_and_non_zero() {
         let ids = [
             CM_QUIT, CM_OK, CM_CANCEL, CM_YES, CM_NO, CM_HELP, CM_CLOSE, CM_ZOOM, CM_NEXT, CM_PREV,
+            CM_EDIT_FG, CM_EDIT_BG,
         ];
         for id in ids {
             assert_ne!(id.0, 0, "id 0 is reserved for 'no command'");
@@ -139,6 +149,7 @@ mod tests {
         // up, so the two namespaces never collide (ADR 0003).
         for id in [
             CM_QUIT, CM_OK, CM_CANCEL, CM_YES, CM_NO, CM_HELP, CM_CLOSE, CM_ZOOM, CM_NEXT, CM_PREV,
+            CM_EDIT_FG, CM_EDIT_BG,
         ] {
             assert!(id.0 < CM_USER, "{id:?} must be a framework-reserved id");
         }

@@ -1,0 +1,16 @@
+---
+source: src/widgets/theme_editor.rs
+assertion_line: 968
+expression: render(&e)
+---
+desktop_background     Sample text                
+window_frame                                      
+window_title                  Foreground...       
+window_title_inactive         Background...       
+menu_bar                                          
+menu_selected          [X] Bold      [X] Underline
+menu_disabled          [ ] Dim       [ ] Reverse  
+menu_hotkey            [ ] Italic    [ ] Blink    
+status_bar                  Restore Defaults      
+status_key                                        
+     Save       Cancel
