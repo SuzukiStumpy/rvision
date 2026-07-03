@@ -18,30 +18,78 @@ use unicode_width::UnicodeWidthStr;
 /// split a grapheme cluster; `width == 0` therefore yields one word per line.
 /// An empty string wraps to one empty line (`[""]`).
 pub fn wrap(text: &str, width: u16) -> Vec<String> {
-    let width = width as usize;
+    wrap_with_offsets(text, width)
+        .into_iter()
+        .map(|(_, line)| line)
+        .collect()
+}
+
+/// Same greedy algorithm as [`wrap`], additionally pairing each output line
+/// with its start byte offset in `text`. `wrap` is a thin map over this, so
+/// there is one wrapping algorithm, not two. (This variant's own space-
+/// collapsing rules it out for an *editable* buffer — see
+/// [`widgets::TextArea`](crate::widgets::TextArea), which reflows with its
+/// own whitespace-preserving pass instead, sharing only [`word_offsets`]
+/// with this module.)
+pub(crate) fn wrap_with_offsets(text: &str, width: u16) -> Vec<(usize, String)> {
+    let width_cols = width as usize;
     let mut out = Vec::new();
     // Hard breaks first, so '\n' (and the blank spacer lines callers rely on,
     // ADR 0012) always survive intact.
+    let mut hard_line_start = 0usize;
     for hard_line in text.split('\n') {
         let mut current = String::new();
-        // `split_whitespace` collapses runs of spaces into single separators.
-        for word in hard_line.split_whitespace() {
+        let mut current_start = hard_line_start;
+        // Mirrors `split_whitespace`'s Unicode-whitespace collapsing, but also
+        // yields each word's byte offset within `hard_line`.
+        for (word_off, word) in word_offsets(hard_line) {
+            let abs_off = hard_line_start + word_off;
             if current.is_empty() {
                 current.push_str(word);
-            } else if current.width() + 1 + word.width() <= width {
+                current_start = abs_off;
+            } else if current.width() + 1 + word.width() <= width_cols {
                 current.push(' ');
                 current.push_str(word);
             } else {
                 // The word would overflow: flush the line and start anew. A word
                 // wider than `width` simply becomes its own (overflowing) line.
-                out.push(std::mem::take(&mut current));
+                out.push((current_start, std::mem::take(&mut current)));
                 current.push_str(word);
+                current_start = abs_off;
             }
         }
         // Emit the line even when empty, so a blank hard line stays blank.
-        out.push(current);
+        out.push((current_start, current));
+        hard_line_start += hard_line.len() + 1; // +1 for the '\n' just consumed
     }
     out
+}
+
+/// Each maximal non-whitespace run in `line`, paired with its byte offset —
+/// `str::split_whitespace` without discarding the position. Shared with
+/// [`widgets::TextArea`](crate::widgets::TextArea)'s own whitespace-preserving
+/// reflow, which needs the same word boundaries but none of `wrap`'s
+/// space-collapsing.
+pub(crate) fn word_offsets(line: &str) -> Vec<(usize, &str)> {
+    let mut words = Vec::new();
+    let mut chars = line.char_indices().peekable();
+    while let Some(&(start, c)) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        let mut end = start + c.len_utf8();
+        chars.next();
+        while let Some(&(i, c2)) = chars.peek() {
+            if c2.is_whitespace() {
+                break;
+            }
+            end = i + c2.len_utf8();
+            chars.next();
+        }
+        words.push((start, &line[start..end]));
+    }
+    words
 }
 
 #[cfg(test)]
@@ -109,6 +157,64 @@ mod tests {
                 cols(&line) <= width || single_word,
                 "{line:?} either fits or is a lone over-long word"
             );
+        }
+    }
+
+    // --- wrap_with_offsets ---
+
+    #[test]
+    fn wrap_with_offsets_matches_wrap_line_for_line() {
+        let text = "the quick brown fox jumps\n\nover superlongword lazy 世界 你好";
+        for width in [0u16, 4, 9, 12, 40] {
+            let plain = wrap(text, width);
+            let offsetted: Vec<String> = wrap_with_offsets(text, width)
+                .into_iter()
+                .map(|(_, l)| l)
+                .collect();
+            assert_eq!(plain, offsetted, "width {width}");
+        }
+    }
+
+    #[test]
+    fn wrap_with_offsets_reports_each_lines_start_in_the_source() {
+        let out = wrap_with_offsets("hello world", 5);
+        assert_eq!(
+            out,
+            vec![(0, "hello".to_string()), (6, "world".to_string())]
+        );
+    }
+
+    #[test]
+    fn wrap_with_offsets_points_at_the_first_word_even_after_collapsing_spaces() {
+        assert_eq!(
+            wrap_with_offsets("a    b", 40),
+            vec![(0, "a b".to_string())]
+        );
+    }
+
+    #[test]
+    fn wrap_with_offsets_tracks_blank_hard_lines() {
+        let out = wrap_with_offsets("one\n\ntwo", 40);
+        assert_eq!(
+            out,
+            vec![
+                (0, "one".to_string()),
+                (4, String::new()),
+                (5, "two".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn every_offset_actually_starts_that_lines_first_word_in_the_source() {
+        let text = "the quick brown fox jumps over superlongword lazy dog";
+        for (offset, line) in wrap_with_offsets(text, 9) {
+            if let Some(first_word) = line.split(' ').next().filter(|w| !w.is_empty()) {
+                assert!(
+                    text[offset..].starts_with(first_word),
+                    "offset {offset} should start {first_word:?} in {line:?}"
+                );
+            }
         }
     }
 }

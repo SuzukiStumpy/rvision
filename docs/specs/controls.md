@@ -47,11 +47,13 @@ impl Button {
 impl View for Button { /* focusable; Enter/Space → post(command); draws focused/normal */ }
 
 // --- InputLine: a one-line text field ---
-pub struct InputLine { bounds, text: String, cursor: usize /*grapheme*/, scroll, focused, .. }
+pub struct InputLine { bounds, text: String, cursor: usize /*grapheme*/, scroll, selection_anchor: Option<usize>, focused, .. }
 impl InputLine {
     pub fn new(bounds: Rect, theme: &Theme) -> Self;
-    pub fn with_text(self, text: &str) -> Self;
+    pub fn with_text(self, text: &str) -> Self;   // cursor at the end, unchanged
+    pub fn set_text(&mut self, text: &str);       // cursor at the end, unchanged
     pub fn text(&self) -> &str;
+    pub fn selected_text(&self) -> Option<&str>;
 }
 impl View for InputLine { /* focusable; edits text; draws caret when focused */ }
 
@@ -112,6 +114,21 @@ impl View for ListBox {
   plain insert past the end so it can still extend the line. The caret's
   attribute reflects the mode — underline for insert, reverse-video block
   for overtype — the same block-vs-bar convention as a real terminal cursor.
+  `set_text`/`with_text` still reset the cursor to the **end** of the new
+  text (unchanged) — only [`TextArea`](text_area.md) defaults to the start.
+  **Navigation additions (shared with `TextArea`, see its spec):**
+  `Ctrl+Left`/`Ctrl+Right` jump by word boundary (readline-style
+  `backward-word`/`forward-word`, see [`text_area.md`](text_area.md));
+  `Ctrl+Home`/
+  `Ctrl+End` are accepted as aliases of `Home`/`End` (a single line has no
+  separate "whole document" to jump to, but the binding still works so an
+  app doesn't need to special-case which control has focus). Holding `Shift`
+  with any navigation key extends a selection (`selection_anchor: Option<usize>`,
+  same anchor/collapse/replace-on-type rules as `TextArea`); a bare
+  navigation key collapses it; a mouse click clears it. The grapheme ops,
+  word-boundary search, and selection-range/replace helpers are shared free
+  functions in `widgets::text_edit`, called by both controls rather than
+  duplicated.
 - **CheckBox.** Focusable; `Space`/`Enter` toggles `checked`. Draws `[X]`/`[ ]` +
   label. **RadioButtons.** Focusable; `Up`/`Down` move the selection; draws
   `(•)`/`( )` per option; exactly one selected.
@@ -155,8 +172,10 @@ impl View for ListBox {
 ## Test plan (write these first)
 
 - **Logic:** button command/default accessors; input-line insert/delete/cursor
-  moves and scroll; checkbox toggle; radio selection wrap; list selection +
-  scroll-to-keep-visible; grapheme handling for a wide/combining char in the input.
+  moves and scroll; word-boundary Ctrl+Left/Ctrl+Right; Shift+navigation
+  selection extend/collapse and replace-on-type/delete; checkbox toggle;
+  radio selection wrap; list selection + scroll-to-keep-visible; grapheme
+  handling for a wide/combining char in the input.
   `ListBox::scroll_metrics` is `None` under a page, `Some` with the right
   `total`/`visible`/`pos` once it overflows; `set_scroll` clamps and moves
   `top` without touching `selected`.

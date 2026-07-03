@@ -3,10 +3,12 @@
 //! A focusable [control](super) for a [`Dialog`](super::Dialog): it holds a
 //! `String`, a grapheme cursor, and a horizontal scroll offset so a value longer
 //! than the field stays usable. Editing and cursor motion step by **grapheme
-//! cluster** (`unicode-segmentation`, ADR 0006/0008), never by byte. When focused
-//! it draws a caret (a reverse-video cell, ADR 0010); a real hardware cursor
-//! waits for the editor (Phase 6).
+//! cluster** (`unicode-segmentation`, ADR 0006/0008), never by byte, via the
+//! shared helpers in [`super::text_edit`]. When focused it draws a caret (a
+//! reverse-video cell, ADR 0010); a real hardware cursor waits for the editor
+//! (Phase 6).
 
+use super::text_edit;
 use crate::canvas::Canvas;
 use crate::cell::{Cell, Grapheme};
 use crate::color::{Attributes, Style};
@@ -22,10 +24,13 @@ pub struct InputLine {
     text: String,
     /// Cursor position as a grapheme index in `0..=len`.
     cursor: usize,
+    /// The other end of an in-progress selection (Shift+navigation), if any.
+    selection_anchor: Option<usize>,
     /// Leftmost visible grapheme index.
     scroll: usize,
     focused: bool,
     style: Style,
+    selection_style: Style,
     /// `Insert` toggles this: on, a printable `Char` overwrites the grapheme
     /// under the cursor instead of pushing it right.
     overtype: bool,
@@ -39,9 +44,11 @@ impl InputLine {
             bounds,
             text: String::new(),
             cursor: 0,
+            selection_anchor: None,
             scroll: 0,
             focused: false,
             style: theme.style(Role::Input),
+            selection_style: theme.style(Role::Selection),
             overtype: false,
         }
     }
@@ -57,6 +64,7 @@ impl InputLine {
     pub fn set_text(&mut self, text: &str) {
         self.text = text.to_string();
         self.cursor = self.len();
+        self.selection_anchor = None;
         self.scroll = 0;
         self.ensure_visible();
     }
@@ -71,25 +79,16 @@ impl InputLine {
         self.cursor
     }
 
+    /// The currently selected text, if any.
+    pub fn selected_text(&self) -> Option<&str> {
+        let (start, end) = text_edit::selection_range(self.selection_anchor, self.cursor)?;
+        let starts = text_edit::grapheme_starts(&self.text);
+        Some(&self.text[starts[start]..starts[end]])
+    }
+
     /// The number of grapheme clusters in the value.
     fn len(&self) -> usize {
-        self.text.graphemes(true).count()
-    }
-
-    /// Byte offset of each grapheme start, with `text.len()` appended — so
-    /// `starts[i]` is valid for every grapheme index `i` in `0..=len`.
-    fn grapheme_starts(&self) -> Vec<usize> {
-        let mut starts: Vec<usize> = self.text.grapheme_indices(true).map(|(i, _)| i).collect();
-        starts.push(self.text.len());
-        starts
-    }
-
-    /// The grapheme index whose start is at or after `byte` (clamped to `len`).
-    fn byte_to_grapheme(&self, byte: usize) -> usize {
-        self.grapheme_starts()
-            .iter()
-            .position(|&s| s >= byte)
-            .unwrap_or_else(|| self.len())
+        text_edit::grapheme_len(&self.text)
     }
 
     /// The grapheme index under local display column `x` — the inverse of the
@@ -105,50 +104,13 @@ impl InputLine {
         idx
     }
 
-    /// Inserts `c` at the cursor, advancing past whatever grapheme now sits there
-    /// (so a combining mark that merges with the previous cluster is handled).
-    fn insert(&mut self, c: char) {
-        let at = self.grapheme_starts()[self.cursor];
-        self.text.insert(at, c);
-        self.cursor = self.byte_to_grapheme(at + c.len_utf8());
-        self.ensure_visible();
-    }
-
-    /// Replaces the grapheme at the cursor with `c` (overtype mode), falling
-    /// back to a plain insert past the end so overtype can still extend the
-    /// line rather than getting stuck.
-    fn overwrite(&mut self, c: char) {
-        if self.cursor >= self.len() {
-            self.insert(c);
-            return;
-        }
-        let starts = self.grapheme_starts();
-        self.text
-            .replace_range(starts[self.cursor]..starts[self.cursor + 1], "");
-        self.insert(c);
-    }
-
-    /// Removes the grapheme before the cursor.
-    fn backspace(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let starts = self.grapheme_starts();
-        self.text
-            .replace_range(starts[self.cursor - 1]..starts[self.cursor], "");
-        self.cursor -= 1;
-        self.ensure_visible();
-    }
-
-    /// Removes the grapheme at the cursor.
-    fn delete(&mut self) {
-        if self.cursor >= self.len() {
-            return;
-        }
-        let starts = self.grapheme_starts();
-        self.text
-            .replace_range(starts[self.cursor]..starts[self.cursor + 1], "");
-        self.ensure_visible();
+    /// Deletes the active selection (if any), clearing the anchor and moving
+    /// the cursor to where the selection started. A no-op when nothing is
+    /// selected.
+    fn delete_selection(&mut self) {
+        let sel = text_edit::selection_range(self.selection_anchor, self.cursor);
+        self.cursor = text_edit::collapse_selection(&mut self.text, sel, self.cursor);
+        self.selection_anchor = None;
     }
 
     /// Scrolls so the cursor column is visible within the field width.
@@ -162,6 +124,16 @@ impl InputLine {
         while col_of(&graphemes, self.cursor) - col_of(&graphemes, self.scroll) >= width {
             self.scroll += 1;
         }
+    }
+
+    /// Moves the cursor via `mv`, updating the selection anchor to match
+    /// whether `shift` was held (ADR-free shared rule, see
+    /// [`text_edit::next_anchor`]), then re-scrolls to keep it visible.
+    fn navigate(&mut self, shift: bool, mv: impl FnOnce(&mut Self)) {
+        let old = self.cursor;
+        mv(self);
+        self.selection_anchor = text_edit::next_anchor(self.selection_anchor, shift, old);
+        self.ensure_visible();
     }
 }
 
@@ -188,6 +160,7 @@ impl View for InputLine {
         let width = area.width();
         canvas.fill(area, &Cell::blank(self.style));
 
+        let selection = text_edit::selection_range(self.selection_anchor, self.cursor);
         let graphemes: Vec<&str> = self.text.graphemes(true).collect();
         let mut col = 0;
         let mut idx = self.scroll;
@@ -196,7 +169,11 @@ impl View for InputLine {
             if col + w > width {
                 break; // never split a wide grapheme across the right edge
             }
-            canvas.put_str(Point::new(col, 0), graphemes[idx], self.style);
+            let style = match selection {
+                Some((start, end)) if idx >= start && idx < end => self.selection_style,
+                _ => self.style,
+            };
+            canvas.put_str(Point::new(col, 0), graphemes[idx], style);
             col += w;
             idx += 1;
         }
@@ -228,24 +205,29 @@ impl View for InputLine {
 
     fn handle_event(&mut self, event: &Event, _ctx: &mut Context) -> EventResult {
         // A click places the caret under the pointer (the group focuses the field
-        // first), regardless of the prior focus.
+        // first), regardless of the prior focus, and clears any selection (no
+        // drag-select yet).
         if let Event::Mouse(m) = event {
             if matches!(m.kind, MouseKind::Down(MouseButton::Left)) {
                 self.cursor = self.grapheme_at(m.pos.x);
+                self.selection_anchor = None;
                 self.ensure_visible();
                 return EventResult::Consumed;
             }
             return EventResult::Ignored;
         }
-        // A bracketed paste drops its text in at the caret; a single-line field
-        // takes only the printable characters, flattening any newlines (ADR 0012).
+        // A bracketed paste drops its text in at the caret (replacing any
+        // selection first); a single-line field takes only the printable
+        // characters, flattening any newlines (ADR 0012).
         if let Event::Paste(text) = event {
             if !self.focused {
                 return EventResult::Ignored;
             }
+            self.delete_selection();
             for c in text.chars().filter(|c| !c.is_control()) {
-                self.insert(c);
+                self.cursor = text_edit::insert(&mut self.text, self.cursor, c);
             }
+            self.ensure_visible();
             return EventResult::Consumed;
         }
         let Event::Key(key) = event else {
@@ -254,17 +236,19 @@ impl View for InputLine {
         if !self.focused {
             return EventResult::Ignored;
         }
+        let shift = key.modifiers.contains(Modifiers::SHIFT);
+        let ctrl = key.modifiers.contains(Modifiers::CONTROL);
         match key.code {
             KeyCode::Char(c)
-                if !c.is_control()
-                    && !key.modifiers.contains(Modifiers::CONTROL)
-                    && !key.modifiers.contains(Modifiers::ALT) =>
+                if !c.is_control() && !ctrl && !key.modifiers.contains(Modifiers::ALT) =>
             {
-                if self.overtype {
-                    self.overwrite(c);
+                self.delete_selection();
+                self.cursor = if self.overtype {
+                    text_edit::overwrite(&mut self.text, self.cursor, c)
                 } else {
-                    self.insert(c);
-                }
+                    text_edit::insert(&mut self.text, self.cursor, c)
+                };
+                self.ensure_visible();
                 EventResult::Consumed
             }
             KeyCode::Insert => {
@@ -272,33 +256,51 @@ impl View for InputLine {
                 EventResult::Consumed
             }
             KeyCode::Backspace => {
-                self.backspace();
-                EventResult::Consumed
-            }
-            KeyCode::Delete => {
-                self.delete();
-                EventResult::Consumed
-            }
-            KeyCode::Left => {
-                self.cursor = self.cursor.saturating_sub(1);
-                self.ensure_visible();
-                EventResult::Consumed
-            }
-            KeyCode::Right => {
-                if self.cursor < self.len() {
-                    self.cursor += 1;
+                if self.selection_anchor.is_some() {
+                    self.delete_selection();
+                } else {
+                    self.cursor = text_edit::backspace(&mut self.text, self.cursor);
                 }
                 self.ensure_visible();
                 EventResult::Consumed
             }
-            KeyCode::Home => {
-                self.cursor = 0;
+            KeyCode::Delete => {
+                if self.selection_anchor.is_some() {
+                    self.delete_selection();
+                } else {
+                    text_edit::delete(&mut self.text, self.cursor);
+                }
                 self.ensure_visible();
                 EventResult::Consumed
             }
+            KeyCode::Left => {
+                self.navigate(shift, |s| {
+                    s.cursor = if ctrl {
+                        text_edit::word_left(&s.text, s.cursor)
+                    } else {
+                        s.cursor.saturating_sub(1)
+                    };
+                });
+                EventResult::Consumed
+            }
+            KeyCode::Right => {
+                self.navigate(shift, |s| {
+                    s.cursor = if ctrl {
+                        text_edit::word_right(&s.text, s.cursor)
+                    } else {
+                        (s.cursor + 1).min(s.len())
+                    };
+                });
+                EventResult::Consumed
+            }
+            // Home/End (and their Ctrl variants, which have nothing further to
+            // reach on a single line) go to the start/end of the value.
+            KeyCode::Home => {
+                self.navigate(shift, |s| s.cursor = 0);
+                EventResult::Consumed
+            }
             KeyCode::End => {
-                self.cursor = self.len();
-                self.ensure_visible();
+                self.navigate(shift, |s| s.cursor = s.len());
                 EventResult::Consumed
             }
             // Tab / Enter / Esc and anything else bubble to the dialog.
@@ -334,9 +336,13 @@ mod tests {
     }
 
     fn press(input: &mut InputLine, code: KeyCode) -> EventResult {
+        key(input, code, Modifiers::NONE)
+    }
+
+    fn key(input: &mut InputLine, code: KeyCode, modifiers: Modifiers) -> EventResult {
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
-        input.handle_event(&Event::Key(KeyEvent::new(code, Modifiers::NONE)), &mut ctx)
+        input.handle_event(&Event::Key(KeyEvent::new(code, modifiers)), &mut ctx)
     }
 
     fn click(input: &mut InputLine, x: i16) -> EventResult {
@@ -539,5 +545,101 @@ mod tests {
         let attrs = buf.get(Point::new(2, 0)).unwrap().style().attrs;
         assert!(attrs.contains(Attributes::REVERSE));
         assert!(!attrs.contains(Attributes::UNDERLINE));
+    }
+
+    // --- Word motion (Ctrl+Left/Ctrl+Right) ---
+
+    #[test]
+    fn ctrl_right_and_left_jump_by_word() {
+        let mut input = focused(30).with_text("hello world");
+        press(&mut input, KeyCode::Home);
+        key(&mut input, KeyCode::Right, Modifiers::CONTROL);
+        assert_eq!(input.cursor(), 6, "lands at the start of 'world'");
+        key(&mut input, KeyCode::Right, Modifiers::CONTROL);
+        assert_eq!(input.cursor(), 11, "lands at the end");
+        key(&mut input, KeyCode::Left, Modifiers::CONTROL);
+        assert_eq!(input.cursor(), 6);
+    }
+
+    // --- Selection (Shift+navigation) ---
+
+    #[test]
+    fn shift_right_extends_a_selection_from_the_starting_cursor() {
+        let mut input = focused(30).with_text("hello");
+        press(&mut input, KeyCode::Home);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        assert_eq!(input.selected_text(), Some("he"));
+    }
+
+    #[test]
+    fn a_bare_arrow_after_shift_selecting_collapses_it() {
+        let mut input = focused(30).with_text("hello");
+        press(&mut input, KeyCode::Home);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        press(&mut input, KeyCode::Right); // no shift: collapses
+        assert_eq!(input.selected_text(), None);
+    }
+
+    #[test]
+    fn selection_range_is_ordered_regardless_of_extend_direction() {
+        let mut input = focused(30).with_text("hello");
+        press(&mut input, KeyCode::End);
+        key(&mut input, KeyCode::Left, Modifiers::SHIFT);
+        key(&mut input, KeyCode::Left, Modifiers::SHIFT);
+        assert_eq!(input.selected_text(), Some("lo"));
+    }
+
+    #[test]
+    fn typing_over_a_selection_replaces_it() {
+        let mut input = focused(30).with_text("hello");
+        press(&mut input, KeyCode::Home);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        press(&mut input, KeyCode::Char('X'));
+        assert_eq!(input.text(), "Xllo");
+        assert_eq!(input.selected_text(), None);
+    }
+
+    #[test]
+    fn backspace_over_a_selection_deletes_the_whole_range() {
+        let mut input = focused(30).with_text("hello");
+        press(&mut input, KeyCode::Home);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        press(&mut input, KeyCode::Backspace);
+        assert_eq!(input.text(), "llo");
+    }
+
+    #[test]
+    fn shift_home_and_end_select_to_the_line_bounds() {
+        let mut input = focused(30).with_text("hello"); // cursor starts at the end
+        key(&mut input, KeyCode::Home, Modifiers::SHIFT);
+        assert_eq!(input.selected_text(), Some("hello"));
+        press(&mut input, KeyCode::End); // bare: collapses, cursor to end
+        assert_eq!(input.selected_text(), None);
+    }
+
+    #[test]
+    fn a_click_clears_an_active_selection() {
+        let mut input = focused(30).with_text("hello");
+        press(&mut input, KeyCode::Home);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        click(&mut input, 4);
+        assert_eq!(input.selected_text(), None);
+    }
+
+    #[test]
+    fn pasting_over_a_selection_replaces_it() {
+        let mut input = focused(30).with_text("hello");
+        press(&mut input, KeyCode::Home);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        key(&mut input, KeyCode::Right, Modifiers::SHIFT);
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        input.handle_event(&Event::Paste("HI".to_string()), &mut ctx);
+        assert_eq!(input.text(), "HIllo");
     }
 }

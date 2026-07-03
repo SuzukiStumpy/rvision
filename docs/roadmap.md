@@ -307,6 +307,144 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      advance, the insert/overtype toggle from #7, bracketed-paste
      handling) as free functions, the way cascade/geometry/hit-testing
      became shared free functions in `menu.rs` rather than a merged type.
+   - ~~TextArea.~~ Landed 2026-07-03:
+     [`widgets::TextArea`](../src/widgets/text_area.rs) — see
+     [`docs/specs/text_area.md`](specs/text_area.md). Two design points
+     shifted during implementation, both recorded in the spec:
+     - **Reflow is not `wrap.rs`.** The plan above named `wrap.rs` as the
+       reflow mechanism, but `wrap::wrap` deliberately collapses runs of
+       whitespace to one separator — correct for read-only prose
+       (`HelpPane`, `MessageBox`), wrong for an editable buffer (typing two
+       spaces would watch one vanish, and the displayed text would stop
+       matching what's stored byte-for-byte). `TextArea` reflows with its
+       own whitespace-preserving `reflow`, sharing only `wrap::word_offsets`
+       (word boundaries with byte offsets, promoted to `pub(crate)`) with
+       `wrap.rs` — one algorithm for word boundaries, two different
+       policies for what happens around them. `wrap::wrap_with_offsets`
+       (an offset-tracking sibling added mid-investigation, before the
+       collapsing problem surfaced) stayed in `wrap.rs` regardless — `wrap`
+       is now a thin map over it, so `HelpPane`/`MessageBox`'s own path
+       gained one algorithm instead of two for free.
+     - **Navigation grew past the original scope, and so did `InputLine`.**
+       A backlog-planning follow-up added `Ctrl+Left`/`Ctrl+Right`
+       word motion, `Ctrl+Home`/`Ctrl+End`, and Shift-extended selection —
+       and asked for the same on `InputLine` too (except `InputLine::set_text`
+       keeps resetting to the **end**; only `TextArea::set_text` defaults to
+       the **start**, via a new `CursorPosition` enum with `_at` variants for
+       the other end). The shared mechanics — grapheme ops, word motion,
+       selection-range/collapse — moved out of `InputLine` into a new
+       `widgets::text_edit` free-function module (per this item's own
+       "share as free functions" call above), which `TextArea` builds on
+       too. See the updated [`docs/specs/controls.md`](specs/controls.md).
+     Manual pass: `examples/text_area.rs`, run in a real terminal (tmux) —
+     typing/backspace, `Ctrl+Home`/`Ctrl+End`, Shift-select-then-replace,
+     and the hosted scroll bar's thumb all confirmed working; `Window`
+     hosts the bar generically via `scroll_metrics` (ADR 0015) with no
+     `TextArea`-specific code in `Window` at all.
+     - Follow-up 2026-07-03: the manual pass surfaced two real problems, one
+       in the library and one in the example. **Example bug, fixed:** the
+       first cut hosted the demo window via `Application::exec_view` (the
+       `dialogs` example's modal pattern), where dragging, resizing, and the
+       close glyph silently do nothing — `Window` "has no concept of a drag
+       session" outside a `Desktop` (ADR 0016 — the framework's own
+       comment, not a gap this landing introduced). Rebuilt on
+       `Shell`/`Desktop`/`Root` (the `chrome` example's pattern) so those
+       actually work, with `Alt-X`/File ▸ Exit as a guaranteed quit
+       independent of the window's own close button (closing a window only
+       removes it from the desktop; it was never going to quit the app).
+       That rebuild initially reintroduced a *different* bug — forgetting
+       `TextArea::set_focused(true)` on the lone interior view, since a
+       `Window`'s interior isn't auto-focused just by its window being the
+       desktop's active one (that's `Window::set_active`'s frame styling,
+       a separate concept from a view's own `focused` flag — only a
+       `Group` auto-focuses a first child, ADR 0010, and there's no `Group`
+       here) — caught by the same re-run, not shipped. **Library bug,
+       fixed:** a display line packed to *exactly* the box's width left the
+       caret one column past the last visible one on `End` — invisible, not
+       just misplaced.
+     - Second follow-up 2026-07-03: a second manual pass (after the above)
+       found the *example* still truncating a wrapped word mid-character
+       ("this wind" instead of wrapping "window" whole) and no scroll bar or
+       working wheel until the window was actually resized once. Root cause
+       was one bug, not two: the example passed the *window's own* outer
+       bounds to `TextArea::new` instead of `Window`'s inset-by-one
+       *interior* bounds — `Window::new`/`styled` don't size the interior
+       for the caller at construction (only a later resize/zoom
+       re-propagates it via `set_bounds`, ADR 0017), so this is on the
+       caller, the same way `HelpWindow::build` computes its own
+       `interior_size` before constructing what it wraps. `TextArea` was
+       reflowing/scrolling against a size two columns/rows bigger than what
+       `Window` actually draws it into — explaining the truncation (reflow
+       thought "window" fit) and the missing scroll bar (`scroll_metrics`
+       thought the taller phantom height didn't need one) in one stroke.
+       Fixed in the example. Separately, prompted by "there should ... at
+       all times [be] one character padding": the previous roll/clamp caret
+       fix was a reactive patch for a symptom, not the cause — replaced with
+       a real invariant. `TextArea` now reflows to `bounds.width() - 1`,
+       *always* reserving the box's last column, so a display line can
+       never reach the true right edge in the first place and the caret
+       always has a real column at true end-of-line. The roll/clamp code
+       from the prior follow-up became unreachable dead weight once this
+       landed and was removed outright; its two tests were replaced with
+       ones asserting the actual invariant (a full-width-content line still
+       wraps one word early; the caret needs no special-casing to be
+       visible).
+     - Third follow-up 2026-07-03: a third bug, this one a real correctness
+       gap in `reflow` itself, not the example — typing several trailing
+       spaces at the end of a line didn't visibly advance the cursor at all
+       until a following non-whitespace character was typed, at which point
+       everything "caught up" at once. Cause: `reflow`'s per-word packing
+       loop only ever measured a gap that came *before* a word — trailing
+       whitespace with no word after it (including a hard line that's
+       nothing but whitespace) was copied onto the current display line
+       verbatim with no width check at all, so it could grow arbitrarily far
+       past the box's width. The canvas draw loop still clips at the true
+       edge, so both the excess spaces and a cursor sitting among them
+       simply stopped being drawn — until a new word finally gave the
+       packing loop something to size against, forcing a real wrap that
+       revealed everything in one jump. Fixed: the tail after the last word
+       (or the whole hard line, unified as the same case when there are no
+       words at all) is no longer copied in one shot — it's now packed one
+       grapheme at a time and wrapped onto its own continuation line(s) once
+       it would overflow, exactly like a real terminal cursor advancing past
+       the right margin. Unlike a word, a run of whitespace has no reason to
+       stay whole, so this is free to split at any point (interior gaps
+       *between* two words were left unaffected at the time — still eliding
+       wholesale at a wrap point, unchanged — which turned out to be wrong
+       too; see the next follow-up). Two `reflow`-level tests plus one
+       `TextArea`-level test added; 633 tests pass.
+     - Fourth follow-up 2026-07-03: reported again — "still not behaving...
+       exactly the same as before." The third follow-up's fix was real but
+       incomplete: it only covered the *trailing* tail; typing whitespace
+       into an *interior* gap (between two words already on the same line —
+       e.g. placing the cursor right after "hello" in "hello world" and
+       typing spaces there) hit the untouched wholesale-elision path and
+       showed the identical symptom. Debugged by reproducing the exact
+       scenario at the unit level (not just re-reading code): the model's
+       `cursor`/`text` update correctly on every keystroke, but
+       `display_pos` — which maps a grapheme cursor to a screen
+       row/column — has no way to represent a position *inside* an elided
+       gap, since those bytes have no display line of their own at all. It
+       fell back to the end of the previous line for every such position,
+       so the caret read as frozen no matter how many spaces went in, until
+       a following word forced a genuine re-wrap and the caret jumped to
+       wherever that word ended up landing — reading as everything
+       "catching up at once." Once diagnosed, eliding *any* gap outright
+       (not just a long one) was the wrong call from the start: `reflow`
+       now never elides a gap, interior or trailing — `place_gap` (a helper
+       used for both) splits whichever it's given across continuation lines
+       the exact same way, so every byte of `text` always lands on a real,
+       addressable display line. The visible cost is that a single
+       separator that doesn't fit now gets a line of its own instead of
+       silently vanishing (matches this control's own "never lose
+       whitespace" principle better than the old wholesale-elision
+       shortcut did anyway, which was borrowed from `wrap::wrap`'s
+       coarser, collapsing prose model without re-examining whether it
+       still fit a byte-exact one). Five existing `reflow`/`TextArea` tests
+       whose expectations encoded the old elision updated; a new
+       `TextArea`-level regression test asserts the caret's display
+       position changes on the very first and second keystrokes typed into
+       an interior gap, not just eventually. 634 tests pass.
 7. ~~**Insert/overtype support** for text entry controls.~~ Landed
    2026-07-03: `InputLine` gained an `overtype: bool` field (default off,
    matching TurboVision); `KeyCode::Insert` toggles it. While on, a

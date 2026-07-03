@@ -1,0 +1,8 @@
+---
+source: src/widgets/text_area.rs
+assertion_line: 1146
+expression: "render(&t, 6, 3)"
+---
+hello 
+      
+world
