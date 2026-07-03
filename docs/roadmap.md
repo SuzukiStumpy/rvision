@@ -78,18 +78,29 @@ Extraction is the trigger `edit`'s ADR 0024 named for `rvision` graduating "to
 an independent semver line and its own repository" — that has now happened.
 Open questions this raises, not yet decided:
 
-- **Versioning & release.** CI (`test` + `lint` in `.github/workflows/ci.yml`)
-  already runs on every push and PR, but there is no release automation yet —
-  no tagging, no changelog, no crates.io publish. `edit` drove its lockstep
-  workspace version with release-please over Conventional Commits; `rvision`
-  needs its own call now that it versions independently.
+- ~~**Versioning & release.**~~ Resolved by ADR 0022: `release-please` now
+  runs on every push to `main`, maintaining an open release PR from
+  Conventional Commits that bumps `Cargo.toml`'s version and `CHANGELOG.md`;
+  merging it tags `vX.Y.Z` and cuts a GitHub Release. The first cut is
+  `v1.0.0`, bootstrapped via a `Release-As` commit footer over the existing
+  `v0.1.0` tag — `edit` depends on `rvision` through a pinned git reference
+  and isn't tracking its HEAD, so the jump doesn't force any downstream
+  change. See [`docs/adr/0022-release-process-and-versioning.md`](adr/0022-release-process-and-versioning.md),
+  `release-please-config.json`, and `.github/workflows/release.yml`.
 - **crates.io publishing.** Not yet published. `Cargo.toml`'s `repository`
-  field already points here; a `publish` step and a documentation pass
-  (`cargo doc`, crate-level docs) would be the remaining gap.
+  field already points here; a `publish` step (gated on release-please's
+  `release_created` output, alongside a documentation pass — `cargo doc`,
+  crate-level docs) would be the remaining gap. Now that tagging/changelog
+  automation is in place (ADR 0022), this is the only piece of release
+  automation still missing.
 - **A second consumer.** `edit` is still the only known consumer. Gaining a
   second consumer (or publishing) was the other named trigger for going
   independent — worth revisiting how much API stability to promise once one
-  exists, since today the API can move freely to suit `edit` alone.
+  exists, since today the API can move freely to suit `edit` alone. `v1.0.0`
+  has now been cut (ADR 0022) on the strength of `edit`'s pinned dependency
+  not being exposed to breakage; this question is now specifically about how
+  that ongoing stability promise shapes future changes, not about whether the
+  initial commitment was premature.
 - **Apple Silicon macOS verification.** `edit`'s Phase 10 exit criteria left
   this "pending hardware" — CI builds it, but no manual terminal-quirk pass has
   happened on that platform. Still open, low urgency, blocks nothing.

@@ -74,6 +74,14 @@ cargo doc --open           # API docs
 cargo insta review         # review pending snapshot changes
 ```
 
+## Releasing
+
+`release-please` runs on every push to `main`, maintaining an open release PR
+from Conventional Commits that bumps `Cargo.toml`'s version and
+`CHANGELOG.md`. Merging that PR tags `vX.Y.Z` and cuts a GitHub Release —
+that's the entire release act today; crates.io publishing isn't wired in yet
+(see `docs/roadmap.md`). Details: ADR 0022.
+
 ## Style
 
 - Match the surrounding code's idiom and comment density. Comments explain

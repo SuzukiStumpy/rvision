@@ -1,0 +1,37 @@
+# Release automation (ADR 0022).
+#
+# On every push to main, release-please reads the Conventional Commits since the
+# last release and maintains an open "release PR" that bumps Cargo.toml's version
+# (and Cargo.lock's matching entry, via the `rust` release-type) and updates
+# CHANGELOG.md. Merging that PR tags vX.Y.Z and cuts a GitHub Release.
+#
+# Unlike `edit` (a binary; see that repo's ADR 0024), there is no cross-platform
+# build/attach job here: rvision is a library with nothing to ship as a binary
+# artefact. Merging the release-please PR is the entire release act for now.
+# Publishing to crates.io is a deliberately separate, not-yet-scheduled piece
+# (see docs/roadmap.md) — add a job here gated on `release_created` when that's
+# decided.
+#
+# Bootstrap (first release only): the manifest declares 0.1.0, matching the
+# existing v0.1.0 tag. The commit that lands this file carries a
+# `Release-As: 1.0.0` footer, so the first PR release-please opens jumps
+# straight to v1.0.0 instead of computing a bump from commit history.
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
