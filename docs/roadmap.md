@@ -113,10 +113,10 @@ Once these are solidified (detail filled in, dependencies worked out), this
 section and the "Backlog (inherited, unscheduled)" section above will be
 retired in favour of a fresh roadmap with proper phases/milestones.
 
-1. **True colour support.** Currently limited to the original EGA/CGA
+1. ~~**True colour support.** Currently limited to the original EGA/CGA
    palette. ADR 0005 already left the cell colour type truecolour-ready;
    themes ship 16-colour CGA first. Needs to land before the colour/theme
-   dialogs below, which depend on the underlying colour model.
+   dialogs below, which depend on the underlying colour model.~~
    - Scoped 2026-07-03: most of the mechanism already exists —
      `Color::Rgb(u8,u8,u8)` and the crossterm backend's passthrough are
      already in place (ADR 0005's "back pocket" is spent). What's actually
@@ -133,6 +133,24 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      unit-tested decision function. No consumer yet by design; `Theme` is
      untouched pending #9. Still open: the resource loader itself, and the
      actual truecolour theme(s) it will let an app supply.
+   - Landed 2026-07-03: the "ship a real theme" half, now that #9 is done.
+     [`examples/themes/truecolour.theme`](../examples/themes/truecolour.theme)
+     is a hand-authored dark palette in ADR 0025's file format — 19 roles'
+     `fg`/`bg` as `rgb(...)` overrides, each role's `attrs` left alone since
+     the CGA layer beneath already sets what's needed (e.g. `WindowTitle`'s
+     bold). It stays example/app-layer data, never a hardcoded Rust
+     constructor, per this item's own scoping note above.
+     [`examples/truecolour.rs`](../examples/truecolour.rs) wires it end to
+     end: `ColorProfile::detect()` picks `Theme::default()` alone on
+     `Cga16`, or `Theme::default().merge(text)` on `Truecolor` — a real
+     graceful fallback, not just the capability check in isolation. Also
+     gained a `--dump-theme` flag (prints every role's resolved colour via
+     `Theme::format_field`, no terminal takeover) — used to diff the two
+     profiles' output and confirm all 19 roles' `fg`/`bg` actually
+     overrode (`Theme::merge`'s per-line parsing is infallible, ADR 0025, so
+     a typo'd role/field key would otherwise fail silently rather than
+     erroring). With this, roadmap item #1 is fully landed; the theme
+     picker sub-item of #2 now has a second theme to pick between.
 2. **New/updated standard dialog boxes.**
    - Colour/palette picker — don't have one yet.
    - Theme picker — essential once more themes exist.
@@ -199,6 +217,32 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      session to the framework default in one step, marking touched only the
      fields that actually need an override to win back over `base` — a panic
      button, not a per-role undo.
+   - Unblocked 2026-07-03: #1 now ships an actual second theme
+     ([`examples/themes/truecolour.theme`](../examples/themes/truecolour.theme)),
+     so the theme picker sub-item has something to pick *between* and is no
+     longer scope-blocked as noted above — still unscheduled/undesigned,
+     just no longer waiting on a dependency.
+   - ~~Theme picker.~~ Landed 2026-07-03:
+     [`widgets::ThemePicker`](../src/widgets/theme_picker.rs) — a candidate
+     list (name + already-built `Theme`, supplied by the caller; the widget
+     never touches `rvision::resource` itself, mirroring `ColorPicker`/
+     `ThemeEditor`'s own boundary) with a live preview panel that redraws
+     from the highlighted candidate's own styles as the highlight moves, no
+     separate activate step. Not an editor — it hands back a whole `Theme`,
+     unlike `ThemeEditor`'s per-role diff. Proactively closed the same gap
+     `ColorPicker` shipped with and later had to fix (`Enter`, `Space`, and a
+     mouse click on *OK* all route through one `accept`, never through
+     `Button::handle_event`'s own bare `CM_OK` post). Built via `pick`/
+     `exec_view` like `ColorPicker`/`FileDialog`, not `Desktop`-hosted like
+     `ThemeEditor` — nothing here needs ADR 0026's nested-window composition
+     since there's no second dialog to open. See
+     [`docs/specs/theme_picker.md`](specs/theme_picker.md) and the
+     `theme_picker` example, which offers "CGA (default)" always and
+     "Truecolour" (`examples/themes/truecolour.theme`) only when
+     `ColorProfile::detect()` reports `Truecolor` — mirroring
+     `examples/dialogs.rs`'s colour-picker gating — and actually applies the
+     picked theme to its own closing screen, not just to the dialog's own
+     preview.
 3. **Utility programs.** Help authoring tool; theme builder; possibly more.
    - Scoped 2026-07-03: the theme builder is a developer-facing tool for
      authoring a theme to ship *with* an application, most likely a thin
@@ -263,11 +307,21 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      advance, the insert/overtype toggle from #7, bracketed-paste
      handling) as free functions, the way cascade/geometry/hit-testing
      became shared free functions in `menu.rs` rather than a merged type.
-7. **Insert/overtype support** for text entry controls.
-   - Scoped 2026-07-03: low-ambiguity. `KeyCode::Insert` already exists
-     in the event model (`src/event.rs`), just unhandled. Wire it to
-     toggle insert/overwrite on `InputLine` now; the new TextArea (#6)
-     picks up the same toggle once it lands.
+7. ~~**Insert/overtype support** for text entry controls.~~ Landed
+   2026-07-03: `InputLine` gained an `overtype: bool` field (default off,
+   matching TurboVision); `KeyCode::Insert` toggles it. While on, a
+   printable `Char` overwrites the grapheme under the cursor via a new
+   `overwrite` op (delete-then-insert, so it reuses `insert`'s
+   combining-mark/cursor-advance handling) instead of pushing text right,
+   falling back to a plain insert past the end so overtype can still
+   extend the line. See [`docs/specs/controls.md`](specs/controls.md).
+   The new TextArea (#6) picks up the same toggle once it lands.
+   - Follow-up 2026-07-03: manual pass surfaced that the two modes looked
+     identical — the caret was always a reverse-video block, so nothing on
+     screen showed which mode was active until you typed. Fixed: the
+     caret's attribute now follows the mode, underline for insert and the
+     original reverse-video block for overtype, matching a real terminal
+     cursor's block-vs-bar convention.
 8. **End-user/developer documentation.** Possibly a GitHub wiki.
    - Scoped 2026-07-03: narrower than first framed. The developer half is
      already largely covered — crate-level rustdoc (`src/lib.rs`) carries

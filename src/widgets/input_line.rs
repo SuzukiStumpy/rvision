@@ -26,6 +26,9 @@ pub struct InputLine {
     scroll: usize,
     focused: bool,
     style: Style,
+    /// `Insert` toggles this: on, a printable `Char` overwrites the grapheme
+    /// under the cursor instead of pushing it right.
+    overtype: bool,
 }
 
 impl InputLine {
@@ -39,6 +42,7 @@ impl InputLine {
             scroll: 0,
             focused: false,
             style: theme.style(Role::Input),
+            overtype: false,
         }
     }
 
@@ -108,6 +112,20 @@ impl InputLine {
         self.text.insert(at, c);
         self.cursor = self.byte_to_grapheme(at + c.len_utf8());
         self.ensure_visible();
+    }
+
+    /// Replaces the grapheme at the cursor with `c` (overtype mode), falling
+    /// back to a plain insert past the end so overtype can still extend the
+    /// line rather than getting stuck.
+    fn overwrite(&mut self, c: char) {
+        if self.cursor >= self.len() {
+            self.insert(c);
+            return;
+        }
+        let starts = self.grapheme_starts();
+        self.text
+            .replace_range(starts[self.cursor]..starts[self.cursor + 1], "");
+        self.insert(c);
     }
 
     /// Removes the grapheme before the cursor.
@@ -183,12 +201,21 @@ impl View for InputLine {
             idx += 1;
         }
 
-        // The caret: a reverse-video cell over the grapheme at the cursor (or a
-        // blank past the end), drawn only when focused (ADR 0010).
+        // The caret over the grapheme at the cursor (or a blank past the
+        // end), drawn only when focused (ADR 0010): a reverse-video block in
+        // overtype mode (what's about to be replaced), an underline in
+        // insert mode (what's about to be pushed right) — the same
+        // block-vs-bar convention as a real terminal cursor, since this caret
+        // is hand-drawn rather than the hardware one (Phase 6).
         if self.focused {
             let caret_col = col_of(&graphemes, self.cursor) - col_of(&graphemes, self.scroll);
             if caret_col >= 0 && caret_col < width {
-                let style = self.style.attrs(Attributes::REVERSE);
+                let caret_attrs = if self.overtype {
+                    Attributes::REVERSE
+                } else {
+                    Attributes::UNDERLINE
+                };
+                let style = self.style.attrs(caret_attrs);
                 let cell = if self.cursor < graphemes.len() {
                     Cell::new(Grapheme::new(graphemes[self.cursor]), style)
                 } else {
@@ -233,7 +260,15 @@ impl View for InputLine {
                     && !key.modifiers.contains(Modifiers::CONTROL)
                     && !key.modifiers.contains(Modifiers::ALT) =>
             {
-                self.insert(c);
+                if self.overtype {
+                    self.overwrite(c);
+                } else {
+                    self.insert(c);
+                }
+                EventResult::Consumed
+            }
+            KeyCode::Insert => {
+                self.overtype = !self.overtype;
                 EventResult::Consumed
             }
             KeyCode::Backspace => {
@@ -415,6 +450,37 @@ mod tests {
     }
 
     #[test]
+    fn insert_key_toggles_overtype_and_typing_overwrites() {
+        let mut input = focused(20);
+        type_str(&mut input, "abc");
+        press(&mut input, KeyCode::Home);
+        assert_eq!(press(&mut input, KeyCode::Insert), EventResult::Consumed);
+        press(&mut input, KeyCode::Char('X'));
+        assert_eq!(input.text(), "Xbc");
+        assert_eq!(input.cursor(), 1);
+    }
+
+    #[test]
+    fn overtype_at_the_end_still_appends() {
+        let mut input = focused(20);
+        type_str(&mut input, "ab");
+        press(&mut input, KeyCode::Insert); // cursor already at the end
+        press(&mut input, KeyCode::Char('c'));
+        assert_eq!(input.text(), "abc");
+    }
+
+    #[test]
+    fn a_second_insert_press_toggles_back_to_insert_mode() {
+        let mut input = focused(20);
+        type_str(&mut input, "abc");
+        press(&mut input, KeyCode::Home);
+        press(&mut input, KeyCode::Insert);
+        press(&mut input, KeyCode::Insert);
+        press(&mut input, KeyCode::Char('X'));
+        assert_eq!(input.text(), "Xabc");
+    }
+
+    #[test]
     fn enter_and_tab_bubble_so_the_dialog_can_use_them() {
         let mut input = focused(20);
         assert_eq!(press(&mut input, KeyCode::Enter), EventResult::Ignored);
@@ -434,19 +500,21 @@ mod tests {
     }
 
     #[test]
-    fn the_caret_is_reverse_video_only_when_focused() {
+    fn the_caret_is_underlined_in_insert_mode_and_shown_only_when_focused() {
         let mut input = focused(10).with_text("hi");
         input.set_focused(true);
         let mut buf = Buffer::new(Size::new(10, 1));
         let mut canvas = Canvas::new(&mut buf);
         input.draw(&mut canvas);
-        // Cursor is at the end (column 2): a reverse-video blank caret.
+        // Cursor is at the end (column 2): an underlined blank caret — the
+        // thin, TurboVision-style insert-mode cursor, distinct from
+        // overtype's reverse-video block (see the test below).
         assert!(
             buf.get(Point::new(2, 0))
                 .unwrap()
                 .style()
                 .attrs
-                .contains(Attributes::REVERSE)
+                .contains(Attributes::UNDERLINE)
         );
 
         // Unfocused: no caret anywhere.
@@ -455,13 +523,21 @@ mod tests {
         let mut canvas = Canvas::new(&mut buf);
         input.draw(&mut canvas);
         for x in 0..10 {
-            assert!(
-                !buf.get(Point::new(x, 0))
-                    .unwrap()
-                    .style()
-                    .attrs
-                    .contains(Attributes::REVERSE)
-            );
+            let attrs = buf.get(Point::new(x, 0)).unwrap().style().attrs;
+            assert!(!attrs.contains(Attributes::UNDERLINE));
+            assert!(!attrs.contains(Attributes::REVERSE));
         }
+    }
+
+    #[test]
+    fn overtype_mode_draws_a_reverse_video_block_caret() {
+        let mut input = focused(10).with_text("hi");
+        press(&mut input, KeyCode::Insert);
+        let mut buf = Buffer::new(Size::new(10, 1));
+        let mut canvas = Canvas::new(&mut buf);
+        input.draw(&mut canvas);
+        let attrs = buf.get(Point::new(2, 0)).unwrap().style().attrs;
+        assert!(attrs.contains(Attributes::REVERSE));
+        assert!(!attrs.contains(Attributes::UNDERLINE));
     }
 }

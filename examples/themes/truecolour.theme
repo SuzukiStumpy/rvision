@@ -1,0 +1,62 @@
+# A hand-authored dark truecolour palette (roadmap backlog #1), in the
+# ADR 0025 theme-file format: `role.field = value` overrides applied on top
+# of `Theme::default()`'s 16-colour CGA styles via `Theme::merge`.
+#
+# This is application/example data, not framework code (ADR 0005/0023 leave
+# the framework's own default theme CGA-only) — it exists to exercise
+# `ColorProfile::detect` end to end with a real theme, per the `examples/
+# truecolour.rs` demo. Only `fg`/`bg` are overridden; each role's `attrs`
+# (e.g. WindowTitle's bold) already comes from the CGA layer beneath and
+# needs no restating (ADR 0025's per-field merge).
+
+# Desktop backdrop.
+desktop_background.fg = rgb(122, 130, 154)
+desktop_background.bg = rgb(26, 27, 38)
+
+# Window chrome.
+window_frame.fg = rgb(200, 208, 232)
+window_frame.bg = rgb(36, 40, 56)
+window_title.fg = rgb(255, 255, 255)
+window_title.bg = rgb(36, 40, 56)
+window_title_inactive.fg = rgb(122, 130, 154)
+window_title_inactive.bg = rgb(36, 40, 56)
+
+# Menu bar.
+menu_bar.fg = rgb(26, 27, 38)
+menu_bar.bg = rgb(192, 197, 214)
+menu_selected.fg = rgb(26, 27, 38)
+menu_selected.bg = rgb(115, 218, 202)
+menu_disabled.fg = rgb(140, 144, 160)
+menu_disabled.bg = rgb(192, 197, 214)
+menu_hotkey.fg = rgb(247, 118, 142)
+menu_hotkey.bg = rgb(192, 197, 214)
+
+# Status bar.
+status_bar.fg = rgb(26, 27, 38)
+status_bar.bg = rgb(192, 197, 214)
+status_key.fg = rgb(247, 118, 142)
+status_key.bg = rgb(192, 197, 214)
+
+# Buttons.
+button_normal.fg = rgb(26, 27, 38)
+button_normal.bg = rgb(115, 218, 202)
+button_focused.fg = rgb(255, 255, 255)
+button_focused.bg = rgb(122, 162, 247)
+
+# Editor/dialog body text.
+editor_text.fg = rgb(200, 208, 232)
+editor_text.bg = rgb(36, 40, 56)
+selection.fg = rgb(255, 255, 255)
+selection.bg = rgb(42, 74, 94)
+selection_inactive.fg = rgb(26, 27, 38)
+selection_inactive.bg = rgb(84, 90, 112)
+dialog_background.fg = rgb(26, 27, 38)
+dialog_background.bg = rgb(192, 197, 214)
+input.fg = rgb(26, 27, 38)
+input.bg = rgb(224, 228, 244)
+help_link.fg = rgb(122, 162, 247)
+help_link.bg = rgb(192, 197, 214)
+
+# Drop shadow.
+shadow.fg = rgb(58, 62, 82)
+shadow.bg = rgb(12, 13, 19)

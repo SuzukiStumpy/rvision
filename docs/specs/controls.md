@@ -106,7 +106,12 @@ impl View for ListBox {
   before/at it; `Left`/`Right`/`Home`/`End` move by grapheme; horizontal scroll
   keeps the cursor visible in a field narrower than the text. Draws the caret (a
   reverse cell) only when focused. Editing goes through grapheme-aware ops
-  (`unicode-segmentation`, ADR 0006) — no byte indexing.
+  (`unicode-segmentation`, ADR 0006) — no byte indexing. `Insert` toggles
+  overtype mode (default off): while on, a printable `Char` replaces the
+  grapheme under the cursor instead of pushing it right, falling back to a
+  plain insert past the end so it can still extend the line. The caret's
+  attribute reflects the mode — underline for insert, reverse-video block
+  for overtype — the same block-vs-bar convention as a real terminal cursor.
 - **CheckBox.** Focusable; `Space`/`Enter` toggles `checked`. Draws `[X]`/`[ ]` +
   label. **RadioButtons.** Focusable; `Up`/`Down` move the selection; draws
   `(•)`/`( )` per option; exactly one selected.
