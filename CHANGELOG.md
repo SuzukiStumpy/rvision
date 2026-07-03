@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.0](https://github.com/SuzukiStumpy/rvision/compare/rvision-v0.1.0...rvision-v1.0.0) (2026-07-03)
+## [1.0.0](https://github.com/SuzukiStumpy/rvision/compare/v0.1.0...v1.0.0) (2026-07-03)
 
 
 ### ⚠ BREAKING CHANGES
