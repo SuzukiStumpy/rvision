@@ -1,6 +1,15 @@
 # Module spec: `rvision::resource`
 
-- **Status:** Draft (design nailed down; ready for TDD)
+- **Status:** Done. Landed 2026-07-03 as [`resource.rs`](../../src/resource.rs)
+  per the test plan below: per-OS user-config-dir resolution
+  (`unix_config_dir`/`macos_config_dir`/`windows_config_dir`, pure and
+  unit-tested on every host regardless of target OS), `load_layers`/
+  `write_user_resource`/`user_resource_path` each split into a thin
+  env-reading wrapper plus a fully-testable core taking already-resolved
+  paths (`load_layers_from`, `write_user_resource_to`) — this crate forbids
+  `unsafe`, which rules out `std::env::set_var` as a test seam, so real-env
+  behaviour is exercised only through the pure per-OS functions, mirroring
+  `ColorProfile::detect`/`profile_from_env` (ADR 0023)'s impure/pure split.
 - **Phase:** unscheduled (roadmap backlog #9)
 - **Related ADRs:** 0024 (layered resource loading, see its 2026-07-03
   addendum for write-back and the env-var override decision)

@@ -48,6 +48,7 @@ pub mod event;
 pub mod geometry;
 pub mod help;
 pub(crate) mod osc52;
+pub mod resource;
 pub mod theme;
 pub mod view;
 pub mod widgets;

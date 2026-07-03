@@ -158,13 +158,16 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      needs that format to land first. It will want the colour picker as a
      building block, so realistically follows it rather than the other
      way round.
-   - Specced 2026-07-03: the colour/palette picker's design is written up
-     in [`docs/specs/color_picker.md`](specs/color_picker.md) — an
-     8×2 CGA swatch grid always present, plus toggleable RGB-fields/hex
-     custom entry gated on `ColorProfile::Truecolor`, both representations
-     kept in sync against one canonical value. Picks a concrete `Color`
-     only (`Named`/`Rgb`), never `Default`. Ready to move to TDD per
-     CLAUDE.md's process.
+   - ~~Colour/palette picker.~~ Landed 2026-07-03:
+     [`widgets::ColorPicker`](../src/widgets/color_picker.rs) — an 8×2 CGA
+     swatch grid always present, plus toggleable RGB-fields/hex custom entry
+     gated on `ColorProfile::Truecolor`, both representations kept in sync
+     against one canonical value, grid-vs-custom "last touched wins" deciding
+     `Named` vs. `Rgb` on accept. `ColorPicker::pick()` wraps it in the usual
+     centred, Esc-cancels `Window`, mirroring `FileDialog`. Wired into the
+     `dialogs` example. See [`docs/specs/color_picker.md`](specs/color_picker.md)
+     (manual terminal pass still open). The theme picker and theme editor
+     sub-items remain blocked as scoped above.
 3. **Utility programs.** Help authoring tool; theme builder; possibly more.
    - Scoped 2026-07-03: the theme builder is a developer-facing tool for
      authoring a theme to ship *with* an application, most likely a thin
@@ -251,8 +254,8 @@ retired in favour of a fresh roadmap with proper phases/milestones.
    auto-loaded at bootstrap. Help content already has a clean
    `parse(&str) -> Model` boundary designed with exactly this swap in mind
    (ADR 0013), so this generalises an already-anticipated seam rather than
-   inventing one. Gates the "ship a real theme" half of #1 and the theme/help
-   authoring tools in #3.
+   inventing one. Gated (now partially cleared, see below) the "ship a real
+   theme" half of #1 and the theme/help authoring tools in #3.
    - Scoped 2026-07-03 (ADR 0024, `docs/specs/resource.md`, design only —
      no code yet): the three layers aren't symmetric. Framework defaults stay
      compile-time embedded (`rvision` has no runtime install location of its
@@ -283,6 +286,15 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      support needed. What's still open (deliberately, its own future pass):
      the theme file format/merge function and help's topic-level merge.
      Ready for TDD.
+   - ~~Path resolution + read/write layer, landed 2026-07-03.~~
+     [`rvision::resource`](../src/resource.rs) — `ResourceLayers`,
+     `load_layers`, `user_resource_path`, `write_user_resource`, exactly per
+     the spec above. Still open, deliberately deferred: the theme file
+     format/merge function and help's topic-level merge — this item was
+     always scoped to path resolution and raw read/write only, not those
+     per-kind formats. Unblocks the theme editor's save path (#2) and both
+     authoring tools (#3) as soon as a theme file format lands; the theme
+     picker still additionally needs #1's truecolour theme as data to offer.
 
 ## Adding a phase
 
