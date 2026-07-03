@@ -105,6 +105,185 @@ Open questions this raises, not yet decided:
   this "pending hardware" — CI builds it, but no manual terminal-quirk pass has
   happened on that platform. Still open, low urgency, blocks nothing.
 
+## Backlog (new, unscheduled — raised 2026-07-03)
+
+Raised in a backlog-planning conversation, not yet detailed into phases.
+Listed in the order raised; #1 is called out as gating several of the others.
+Once these are solidified (detail filled in, dependencies worked out), this
+section and the "Backlog (inherited, unscheduled)" section above will be
+retired in favour of a fresh roadmap with proper phases/milestones.
+
+1. **True colour support.** Currently limited to the original EGA/CGA
+   palette. ADR 0005 already left the cell colour type truecolour-ready;
+   themes ship 16-colour CGA first. Needs to land before the colour/theme
+   dialogs below, which depend on the underlying colour model.
+   - Scoped 2026-07-03: most of the mechanism already exists —
+     `Color::Rgb(u8,u8,u8)` and the crossterm backend's passthrough are
+     already in place (ADR 0005's "back pocket" is spent). What's actually
+     left is capability detection with a graceful 16-colour fallback (the
+     scope ADR 0005 explicitly deferred), plus a *new* truecolour theme (or
+     themes) to exercise it. The embedded `Theme::default()` CGA theme stays
+     exactly as-is in framework code — it is not being replaced. Any new
+     truecolour theme is data for the app layer to supply/inject at
+     runtime, not a new hardcoded Rust constructor, which makes this item
+     dependent on #9 (resource loader) for the "ship a real theme" half;
+     the capability-detection half does not need to wait.
+   - Landed 2026-07-03: `ColorProfile::detect()` in `color.rs` (ADR 0023) —
+     reads `COLORTERM`/`TERM` to decide `Truecolor` vs. `Cga16` via a pure,
+     unit-tested decision function. No consumer yet by design; `Theme` is
+     untouched pending #9. Still open: the resource loader itself, and the
+     actual truecolour theme(s) it will let an app supply.
+2. **New/updated standard dialog boxes.**
+   - Colour/palette picker — don't have one yet.
+   - Theme picker — essential once more themes exist.
+   - Theme editor — a user-facing dialog for creating/editing themes from
+     within a running application; a distinct tool from #3's theme
+     builder (see below), not a naming duplicate of it.
+   - ~~Standardised file open/save dialogs.~~ Already have one:
+     [`widgets::FileDialog`](../src/widgets/file_dialog.rs), covering both
+     Open and Save, built on ADR 0016's unified `Window`.
+   - Scoped 2026-07-03: the file dialog sub-item is resolved (struck
+     above), leaving three sub-items with a real dependency order. The
+     colour/palette picker is ungated — `Color`/`Color16`/`Style`
+     (ADR 0005) and `ColorProfile` (ADR 0023) already give it everything
+     it needs (a 16-swatch CGA grid always available; RGB entry offered
+     when `ColorProfile::detect()` reports `Truecolor`) — so it's the
+     piece that can start now. The theme picker stays blocked: it
+     has nothing to pick *between* until #9 lands enough to load a second
+     theme and #1 has an actual truecolour theme as data to offer. The
+     theme editor writes a created/edited theme to the *user* resource
+     layer (ADR 0024's auto-discovered per-user path) — its UI/model can
+     be scoped and built against an in-memory `Theme` before #9's
+     still-open theme file format is settled; only the actual *save*
+     needs that format to land first. It will want the colour picker as a
+     building block, so realistically follows it rather than the other
+     way round.
+   - Specced 2026-07-03: the colour/palette picker's design is written up
+     in [`docs/specs/color_picker.md`](specs/color_picker.md) — an
+     8×2 CGA swatch grid always present, plus toggleable RGB-fields/hex
+     custom entry gated on `ColorProfile::Truecolor`, both representations
+     kept in sync against one canonical value. Picks a concrete `Color`
+     only (`Named`/`Rgb`), never `Default`. Ready to move to TDD per
+     CLAUDE.md's process.
+3. **Utility programs.** Help authoring tool; theme builder; possibly more.
+   - Scoped 2026-07-03: the theme builder is a developer-facing tool for
+     authoring a theme to ship *with* an application, most likely a thin
+     wrapper reusing #2's theme editor dialog/component but pointed at
+     the app-defaults resource layer (ADR 0024) instead of the user layer
+     the in-app editor writes to by default. Same editing surface, two
+     different output layers — see #2's scoping note.
+   - Scoped 2026-07-03: the help authoring tool needs no new format — ADR
+     0013 already designed the `parse(&str) -> HelpContents` boundary
+     specifically so a future authoring tool could target it, and the
+     tool live-previews through the existing `HelpPane` renderer. Same
+     shape as the theme builder: a thin wrapper that saves through #9's
+     resource loader to the app-defaults layer. Its editing pane needs a
+     multi-line text-entry control, which doesn't exist yet — see #6.
+4. **Python bindings.** Write `rvision` applications with Python as the
+   application layer calling into the library.
+5. **TypeScript/JavaScript bindings.** Similar goal to the Python bindings;
+   likely lower priority.
+   - Scoped 2026-07-03 (both #4 and #5, deferred — not resolved): the
+     crate-structure question is easy — bindings live in their own,
+     separate crate(s), so ADR 0001's runtime crate budget (which governs
+     `rvision` itself) doesn't apply to them. The real blocker is a
+     genuine FFI design problem, not a roadmap bullet: `rvision`'s `View`
+     is a Rust trait dispatched via `Box<dyn View>` (ADR 0003) — a
+     Python/JS app layer needs to *implement* that shape and be called
+     back into every frame across the boundary (PyO3 for Python; a Node
+     native addon via `napi-rs`/`neon` for JS, since a real TTY rules out
+     WASM/browser). Needs its own dedicated design session — which
+     binding mechanism, how `View` dispatch crosses the FFI boundary,
+     whether the host language or Rust drives the single-threaded
+     poll/read loop — before either item can be scoped further.
+6. **New widgets.** Combo box; group box; tab bar; status panel; TextArea
+   (multi-line text entry); possibly others.
+   - Scoped 2026-07-03: "frame" renamed to **group box** — a titled,
+     bordered box for visually grouping related controls (e.g. a set of
+     radio buttons under "Alignment:"), distinct from the existing
+     `widgets::Frame` (window-chrome border drawing helper, not an
+     independent `View` — see `src/widgets/frame.rs`). TextArea added: a
+     general-purpose scrollable multi-line text-entry control,
+     generalizing `InputLine`'s single line the way `ListBox`
+     generalizes a single choice. It's reusable UI furniture, not
+     `edit`-specific domain knowledge, so it belongs here rather than
+     staying editor-only — CLAUDE.md's "no editor knowledge" line is
+     about document/buffer/syntax concepts, not a plain multi-row text
+     field. #3's help authoring tool is blocked on this landing.
+     TextArea is a separate `View` from `InputLine`, not one widget
+     configured into two modes: the internal shapes genuinely differ (a
+     single `String` + one cursor index vs. a multi-line buffer with
+     vertical scrolling via the existing `scroll_metrics`/`ScrollBar`
+     protocol, ADR 0015, and reflow via the existing `wrap.rs` already
+     used by `HelpPane`) — folding both into one struct means branching
+     on a mode flag through draw/event/scroll throughout. Follows the
+     precedent already set by `MenuBar`/`ContextMenu`: separate types,
+     sharing only the genuinely common mechanics (grapheme-based cursor
+     advance, the insert/overtype toggle from #7, bracketed-paste
+     handling) as free functions, the way cascade/geometry/hit-testing
+     became shared free functions in `menu.rs` rather than a merged type.
+7. **Insert/overtype support** for text entry controls.
+   - Scoped 2026-07-03: low-ambiguity. `KeyCode::Insert` already exists
+     in the event model (`src/event.rs`), just unhandled. Wire it to
+     toggle insert/overwrite on `InputLine` now; the new TextArea (#6)
+     picks up the same toggle once it lands.
+8. **End-user/developer documentation.** Possibly a GitHub wiki.
+   - Scoped 2026-07-03: narrower than first framed. The developer half is
+     already largely covered — crate-level rustdoc (`src/lib.rs`) carries
+     an architecture-at-a-glance overview, and `docs/adr`/`docs/specs`/
+     `CLAUDE.md` cover the *why* and *how the framework works*. The real
+     gap is an end-user getting-started tutorial: zero-to-running walked
+     in prose, narrating what `examples/hello.rs` already demonstrates in
+     code, through to wiring a `Shell`/`Desktop` with a dialog. Venue: no
+     wiki — it would be a second, unversioned, non-PR-reviewed home for
+     documentation, breaking the pattern every other doc in this project
+     already follows (ADRs, specs, roadmap: all in-repo, versioned,
+     reviewed). Lands as `docs/getting-started.md` (or an expanded
+     README) instead. The API-reference half arrives for free via
+     docs.rs once crates.io publishing happens — already tracked above
+     under "crates.io publishing," which already names "a documentation
+     pass" as part of that remaining gap; the two should merge into one
+     line item once either is actually scheduled.
+9. **Generic resource loader.** Raised 2026-07-03 while scoping #1: themes
+   and help content (ADR 0013) both want to move from Rust-embedded data
+   (`include_str!` etc.) to files loaded at runtime, layered
+   framework-defaults → application-defaults → user-customisation,
+   auto-loaded at bootstrap. Help content already has a clean
+   `parse(&str) -> Model` boundary designed with exactly this swap in mind
+   (ADR 0013), so this generalises an already-anticipated seam rather than
+   inventing one. Gates the "ship a real theme" half of #1 and the theme/help
+   authoring tools in #3.
+   - Scoped 2026-07-03 (ADR 0024, `docs/specs/resource.md`, design only —
+     no code yet): the three layers aren't symmetric. Framework defaults stay
+     compile-time embedded (`rvision` has no runtime install location of its
+     own); the app layer's directory is supplied explicitly by the app
+     author (no auto-discovery — packaging conventions vary too much); only
+     the user layer gets real auto-discovered path resolution, generalizing
+     `edit::settings::config_path` (`edit` ADR 0025) with an app-name and
+     per-kind file-name parameter. One file per resource kind, not an
+     omnibus config. No generic `Resource`/merge trait — each kind (theme,
+     help) keeps its own format and merge rule; `rvision::resource` only
+     locates and reads raw text for the app/user layers. Still open: the
+     theme file format and its merge function, help's topic-level merge, and
+     an `edit`-style env-var override.
+   - Design nailed down 2026-07-03 (ADR 0024 addendum, `docs/specs/resource.md`
+     — still no code): closed the two items the first pass left open.
+     Write-back was missing outright — added `write_user_resource`,
+     symmetrical with `user_resource_path`/`load_layers`, needed by #2's
+     theme editor and #3's theme builder to actually save what they edit.
+     The app-defaults layer gets no equivalent helper — its caller already
+     holds the exact directory it supplied, so writing there is a bare
+     `fs::write`, not path-resolution logic worth centralizing. The
+     `edit`-style env-var override is decided **against**: generalizing it
+     would mean `rvision` inventing an env-var name from a runtime
+     `app_name` string, which is the same kind of guessed-at convention
+     ADR 0024 already ruled out for app-layer auto-discovery. An app that
+     wants one checks its own env var first and falls through to
+     `user_resource_path`/`write_user_resource` when unset — no module
+     support needed. What's still open (deliberately, its own future pass):
+     the theme file format/merge function and help's topic-level merge.
+     Ready for TDD.
+
 ## Adding a phase
 
 When work here gets scheduled, add a `## Phase N` section following the format
