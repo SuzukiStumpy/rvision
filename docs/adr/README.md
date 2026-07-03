@@ -37,5 +37,6 @@ workspace from the start, so it kept its original number unchanged.
 | [0022](0022-release-process-and-versioning.md) | Release process: `release-please`, single-crate config, cut v1.0.0 |
 | [0023](0023-truecolour-capability-detection.md) | Truecolour capability detection: `ColorProfile::detect`, env vars, no new crate |
 | [0024](0024-layered-resource-loading.md) | Layered resource loading: shared path resolution, per-kind format & merge |
+| [0025](0025-theme-file-format-and-merge.md) | Theme file format: dotted `key = value`, infallible merge via `Theme::with` |
 
 New decision? Copy [`0000-template.md`](0000-template.md).

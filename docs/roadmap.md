@@ -254,8 +254,9 @@ retired in favour of a fresh roadmap with proper phases/milestones.
    auto-loaded at bootstrap. Help content already has a clean
    `parse(&str) -> Model` boundary designed with exactly this swap in mind
    (ADR 0013), so this generalises an already-anticipated seam rather than
-   inventing one. Gated (now partially cleared, see below) the "ship a real
-   theme" half of #1 and the theme/help authoring tools in #3.
+   inventing one. Gated (now cleared, see below, for themes specifically —
+   help's own topic-level merge is still its own deferred pass) the "ship a
+   real theme" half of #1 and the theme/help authoring tools in #3.
    - Scoped 2026-07-03 (ADR 0024, `docs/specs/resource.md`, design only —
      no code yet): the three layers aren't symmetric. Framework defaults stay
      compile-time embedded (`rvision` has no runtime install location of its
@@ -295,6 +296,21 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      per-kind formats. Unblocks the theme editor's save path (#2) and both
      authoring tools (#3) as soon as a theme file format lands; the theme
      picker still additionally needs #1's truecolour theme as data to offer.
+   - ~~Theme file format + merge function, landed 2026-07-03.~~ ADR 0025:
+     `Theme::merge(self, text: &str) -> Self` applies dotted
+     `role.field = value` overrides (e.g. `editor_text.fg = rgb(30,30,46)`)
+     per-field onto the layer beneath — layering is
+     `Theme::default().merge(app).merge(user)`. Infallible, matching
+     `HelpContents::parse`'s precedent (ADR 0013): an unparseable/unknown
+     line is skipped rather than erroring the whole layer. Still open,
+     deliberately out of this item's scope: how the theme editor (#2)/theme
+     builder (#3) *serialize* an edited `Theme` back into this format to hand
+     to `write_user_resource` (full dump vs. diff-against-the-layer-beneath)
+     — left to their own spec, since `merge`'s contract doesn't care which a
+     caller chooses. Help's topic-level merge remains separately deferred.
+     With this, #9's own scope is complete; #2/#3 can now actually load a
+     second theme, though the theme picker still needs #1's truecolour theme
+     as data to offer before it has anything to pick between.
 
 ## Adding a phase
 
