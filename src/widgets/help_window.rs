@@ -64,7 +64,7 @@ impl HelpWindow {
     /// — see `docs/specs/desktop.md`), showing `contents.home()`.
     pub fn build(contents: HelpContents, area: Rect, title: &str, theme: &Theme) -> Window {
         let bounds = default_bounds(area);
-        let interior = Self::new(contents, bounds.size(), theme);
+        let interior = Self::new(contents, interior_size(bounds.size()), theme);
         Window::new(bounds, title, theme, Box::new(interior))
     }
 
@@ -81,7 +81,7 @@ impl HelpWindow {
         topic: &str,
     ) -> Window {
         let bounds = default_bounds(area);
-        let mut interior = Self::new(contents, bounds.size(), theme);
+        let mut interior = Self::new(contents, interior_size(bounds.size()), theme);
         if let Some(idx) = interior.contents.topic_index(topic) {
             interior.list.select(idx);
             interior.shown = Some(idx);
@@ -237,6 +237,18 @@ fn default_bounds(area: Rect) -> Rect {
     let x = area.origin().x + (area.width() - w) / 2;
     let y = area.origin().y + (area.height() - h) / 2;
     Rect::from_origin_size(Point::new(x, y), Size::new(w, h))
+}
+
+/// The interior area `Window` will actually hand this composite once
+/// wrapped in its border — one cell inset on every side, mirroring
+/// `Window::interior_bounds`. `build`/`build_at` must size the interior to
+/// *this*, not the outer window bounds: sizing it to the outer bounds wraps
+/// the pane assuming up to two extra columns/rows that don't exist, so the
+/// tail of a line gets silently clipped on the first draw (`Canvas::child`
+/// clips overlong text to its box) until a real resize routes through
+/// `Window::set_bounds`, which does pass this same, correctly inset size.
+fn interior_size(outer: Size) -> Size {
+    Size::new((outer.width - 2).max(0), (outer.height - 2).max(0))
 }
 
 impl View for HelpWindow {
@@ -435,6 +447,37 @@ Click things.
     fn build_clamps_to_a_smaller_area_without_panicking() {
         let w = HelpWindow::build(contents(), rect(0, 0, 12, 5), "Help", &Theme::default());
         assert_eq!(w.bounds().size(), Size::new(12, 5));
+    }
+
+    #[test]
+    fn build_wraps_the_pane_to_its_true_interior_width_not_the_outer_window_size() {
+        // Regression: `build` used to size the pane from the outer window
+        // bounds (`bounds.size()`), two columns/rows wider than what `Window`
+        // actually gives its interior once wrapped in a border. The pane
+        // would then wrap a line assuming that extra width, and the tail of
+        // it got silently clipped on the very first draw (Canvas::child
+        // clips overlong text to its box) — a real resize fixed it, since
+        // that goes through Window::set_bounds, which passes the correctly
+        // inset interior_bounds(). A 40-wide window's interior pane is 15
+        // columns wide (40 - LIST_WIDTH(22) - DIVIDER_WIDTH(1) - the 2-column
+        // border inset); at the old, wrongly-wide 17 columns "12345678901
+        // MARK" (16 chars) fits on one line and "MARK" gets clipped to "MAR"
+        // on the real draw; at the true 15 it wraps first, so "MARK" draws
+        // whole on its own line.
+        let src = "@topic t T\n12345678901 MARK\n";
+        let w = HelpWindow::build(
+            HelpContents::parse(src),
+            rect(0, 0, 40, 10),
+            "Help",
+            &Theme::default(),
+        );
+        let mut buf = Buffer::new(Size::new(40, 10));
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        assert!(
+            buf.to_text().contains("MARK"),
+            "the word wraps whole onto its own line instead of being clipped"
+        );
     }
 
     // --- build_at: opening straight to a given topic (ADR 0021) ---
