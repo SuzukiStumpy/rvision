@@ -17,6 +17,8 @@ crate stays reusable by any terminal application.
 - `src/` — the framework.
 - `examples/` — manual-verification demos (`cargo run --example <name>`).
 - `docs/adr/` — one numbered Architecture Decision Record per major decision.
+- `docs/adr/README.md` - index of ADRs.  Update this whenever creating or
+  amending ADRs.
 - `docs/specs/` — one spec per module.
 - `docs/module-spec-template.md` — copy this before building any new module.
 

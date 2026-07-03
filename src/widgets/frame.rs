@@ -52,6 +52,11 @@ const ZOOM: &str = "[↑]";
 /// is unchanged.
 const ZOOM_MAXIMIZED: &str = "[↕]";
 
+/// The help glyph, drawn immediately left of the zoom glyph when the window
+/// has a help topic (ADR 0021) — same width as the others, so it follows the
+/// same span/layout math.
+const HELP: &str = "[?]";
+
 /// The resize-handle glyph drawn in the bottom-right corner in place of the
 /// plain border corner when the frame is resizable — a purely visual
 /// affordance (`Desktop` already treats that corner as the resize grab point
@@ -66,6 +71,7 @@ pub struct Frame {
     closable: bool,
     zoomable: bool,
     resizable: bool,
+    help: bool,
     style: Style,
     title_style: Style,
 }
@@ -82,6 +88,7 @@ impl Frame {
             closable: true,
             zoomable: true,
             resizable: true,
+            help: false,
             style,
             title_style,
         }
@@ -113,6 +120,14 @@ impl Frame {
         self
     }
 
+    /// Sets whether the help glyph is drawn at all (ADR 0021) — `false` by
+    /// default, unlike `closable`/`zoomable`: a window only gets one when it
+    /// actually has a help topic ([`Window::with_help_topic`](super::Window::with_help_topic)).
+    pub fn help(mut self, help: bool) -> Self {
+        self.help = help;
+        self
+    }
+
     /// Sets whether the bottom-right corner shows a resize-handle glyph in
     /// place of the plain border corner (default `true`) — purely visual;
     /// the corner is always the resize grab point regardless of what's drawn
@@ -133,6 +148,13 @@ impl Frame {
         self.zoomable = zoomable;
     }
 
+    /// Sets the help flag in place, mirroring [`set_active`](Self::set_active)
+    /// — [`Window::with_help_topic`](super::Window::with_help_topic) calls
+    /// this (ADR 0021).
+    pub fn set_help(&mut self, help: bool) {
+        self.help = help;
+    }
+
     /// Sets the resizable flag in place, mirroring [`set_active`](Self::set_active).
     pub fn set_resizable(&mut self, resizable: bool) {
         self.resizable = resizable;
@@ -150,23 +172,44 @@ impl Frame {
         self.maximized = maximized;
     }
 
-    /// Whether a `width`-wide frame is wide enough to draw the close/zoom glyphs.
-    fn glyphs_shown(width: i16) -> bool {
-        width >= 10
+    /// Whether a `width`-wide frame is wide enough to draw its glyphs — three
+    /// (close/zoom/help) when `help` is set, two otherwise (ADR 0021's
+    /// all-or-nothing gate: a narrow frame drops every glyph it would need
+    /// together, never just one). `help` reflects a specific frame's own
+    /// flag, not a global constant, so a plain window's threshold is
+    /// unchanged from before ADR 0021.
+    fn glyphs_shown(width: i16, help: bool) -> bool {
+        if help { width >= 13 } else { width >= 10 }
     }
 
     /// The column span the close glyph occupies on a `width`-wide frame's top edge,
-    /// or `None` when the frame is too narrow to show it. Lets a window turn a click
-    /// into the close action without re-deriving the glyph layout (ADR 0007).
-    pub fn close_span(width: i16) -> Option<Range<i16>> {
-        Self::glyphs_shown(width).then(|| 2..2 + CLOSE.chars().count() as i16)
+    /// or `None` when the frame is too narrow to show it (`help` widens the
+    /// narrow-frame threshold to also fit the help glyph, ADR 0021). Lets a
+    /// window turn a click into the close action without re-deriving the
+    /// glyph layout (ADR 0007).
+    pub fn close_span(width: i16, help: bool) -> Option<Range<i16>> {
+        Self::glyphs_shown(width, help).then(|| 2..2 + CLOSE.chars().count() as i16)
     }
 
     /// The column span the zoom glyph occupies, mirroring [`close_span`](Self::close_span).
-    pub fn zoom_span(width: i16) -> Option<Range<i16>> {
-        Self::glyphs_shown(width).then(|| {
+    pub fn zoom_span(width: i16, help: bool) -> Option<Range<i16>> {
+        Self::glyphs_shown(width, help).then(|| {
             let len = ZOOM.chars().count() as i16;
             (width - 1 - len)..(width - 1)
+        })
+    }
+
+    /// The column span the help glyph occupies, immediately left of
+    /// [`zoom_span`](Self::zoom_span) with no gap between them (ADR 0021).
+    /// Only meaningful when the frame actually has a help topic — a caller
+    /// gates on that itself, the same way `close_span`/`zoom_span` are only
+    /// consulted when `closable`/`zoomable`.
+    pub fn help_span(width: i16) -> Option<Range<i16>> {
+        Self::glyphs_shown(width, true).then(|| {
+            let zoom_len = ZOOM.chars().count() as i16;
+            let help_len = HELP.chars().count() as i16;
+            let zoom_start = width - 1 - zoom_len;
+            (zoom_start - help_len)..zoom_start
         })
     }
 
@@ -181,26 +224,33 @@ impl Frame {
         let g = if self.active { &DOUBLE } else { &SINGLE };
         self.draw_border(canvas, area, g);
 
-        // The close/zoom glyphs sit just inside the corners; only drawn when the
-        // frame is wide enough *and* the window is closable/zoomable (ADR 0016)
-        // — a narrow or non-closable/zoomable frame keeps a clean border instead
-        // of a clipped or dead-looking glyph. The title is centred in the span
-        // between whichever glyphs are actually drawn (or the whole top edge
-        // when neither is) and truncated to fit, so it never overdraws a glyph.
+        // The close/zoom/help glyphs sit just inside the corners; only drawn
+        // when the frame is wide enough *and* the window is closable/zoomable/
+        // has a help topic (ADR 0016, ADR 0021) — a narrow or unconfigured
+        // frame keeps a clean border instead of a clipped or dead-looking
+        // glyph. The title is centred in the span between whichever glyphs are
+        // actually drawn (or the whole top edge when none are) and truncated
+        // to fit, so it never overdraws a glyph.
         let top = 0;
         let mut left = 1;
         let mut right = w - 1;
         if self.closable {
-            if let Some(close) = Self::close_span(w) {
+            if let Some(close) = Self::close_span(w, self.help) {
                 canvas.put_str(Point::new(close.start, top), CLOSE, self.style);
                 left = close.end;
             }
         }
         if self.zoomable {
-            if let Some(zoom) = Self::zoom_span(w) {
+            if let Some(zoom) = Self::zoom_span(w, self.help) {
                 let zoom_glyph = if self.maximized { ZOOM_MAXIMIZED } else { ZOOM };
                 canvas.put_str(Point::new(zoom.start, top), zoom_glyph, self.style);
                 right = zoom.start;
+            }
+        }
+        if self.help {
+            if let Some(help) = Self::help_span(w) {
+                canvas.put_str(Point::new(help.start, top), HELP, self.style);
+                right = help.start;
             }
         }
         self.draw_title(canvas, top, left, right);
@@ -356,5 +406,61 @@ mod tests {
         // 1-wide / 1-tall: below the box minimum; draws nothing, no panic.
         assert_eq!(render(&frame, 1, 4), " \n \n \n ");
         assert_eq!(render(&frame, 4, 1), "    ");
+    }
+
+    // --- Help glyph (ADR 0021) ---
+
+    #[test]
+    fn no_help_glyph_by_default() {
+        let frame = Frame::new("Doc", Style::new(), Style::new());
+        assert!(!render(&frame, 20, 3).contains('?'));
+    }
+
+    #[test]
+    fn help_glyph_shown_when_enabled_and_sits_left_of_zoom() {
+        let frame = Frame::new("Doc", Style::new(), Style::new()).help(true);
+        let text = render(&frame, 20, 3);
+        assert!(text.contains('?'), "help glyph drawn");
+        let row = text.lines().next().unwrap();
+        let help_col = row.find('?').unwrap();
+        let zoom_col = row.find('↑').unwrap();
+        assert!(help_col < zoom_col, "help glyph sits left of zoom");
+    }
+
+    #[test]
+    fn help_span_is_immediately_left_of_zoom_span_with_no_gap() {
+        let zoom = Frame::zoom_span(20, true).unwrap();
+        let help = Frame::help_span(20).unwrap();
+        assert_eq!(help.end, zoom.start);
+    }
+
+    #[test]
+    fn a_help_enabled_frame_needs_a_wider_frame_before_showing_any_glyph() {
+        // 12 is plenty for the old two-glyph threshold (10) but not enough to
+        // also fit the help glyph (ADR 0021's all-or-nothing gate): every
+        // glyph drops together, not just help.
+        let frame = Frame::new("X", Style::new(), Style::new()).help(true);
+        let narrow = render(&frame, 12, 3);
+        assert!(!narrow.contains('['), "no glyph at all when too narrow");
+
+        let wide = render(&frame, 13, 3);
+        assert!(wide.contains('['), "all glyphs return once wide enough");
+    }
+
+    #[test]
+    fn a_plain_frames_glyph_threshold_is_unaffected_by_adr_0021() {
+        // A frame that never turns help on keeps exactly the old threshold —
+        // ADR 0021 only widens the gate for a frame that actually uses it.
+        let frame = Frame::new("X", Style::new(), Style::new());
+        assert!(render(&frame, 10, 3).contains('['));
+    }
+
+    #[test]
+    fn close_and_zoom_spans_widen_their_threshold_only_when_help_is_set() {
+        assert!(Frame::close_span(10, false).is_some());
+        assert!(Frame::close_span(12, true).is_none());
+        assert!(Frame::close_span(13, true).is_some());
+        assert!(Frame::zoom_span(12, true).is_none());
+        assert!(Frame::zoom_span(13, true).is_some());
     }
 }

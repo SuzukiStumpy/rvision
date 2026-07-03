@@ -31,8 +31,12 @@ use super::{Frame, Window};
 pub struct WindowId(u64);
 
 /// The smallest a window may shrink to during a resize session: enough width
-/// for the frame's close/zoom glyphs ([`Frame::glyphs_shown`]'s threshold) and
-/// enough height for the border plus one interior row. An implementation
+/// for the frame's close/zoom glyphs ([`Frame::glyphs_shown`]'s threshold for
+/// a window with no help topic) and enough height for the border plus one
+/// interior row. A window with a help topic (ADR 0021) needs a wider frame
+/// still to keep showing all three glyphs, but this floor doesn't chase
+/// that — such a window's glyphs can disappear before a resize hits this
+/// floor, same as any other narrow-frame glyph drop. An implementation
 /// detail, not a design question (see `docs/specs/desktop.md`'s open
 /// questions).
 const MIN_SIZE: Size = Size::new(10, 3);
@@ -246,9 +250,10 @@ impl Desktop {
 
     /// Starts a move or resize session if `local` (already translated into
     /// `id`'s coordinates) is a valid grab point: the title bar (row 0),
-    /// clear of any drawn close/zoom glyph, for a move; the bottom-right
-    /// corner for a resize. Returns whether a session was started — a `false`
-    /// return leaves the click to be forwarded into the window as usual.
+    /// clear of any drawn close/zoom/help glyph (ADR 0021), for a move; the
+    /// bottom-right corner for a resize. Returns whether a session was
+    /// started — a `false` return leaves the click to be forwarded into the
+    /// window as usual.
     fn start_session_if_applicable(&mut self, id: WindowId, local: Point, anchor: Point) -> bool {
         let Some(window) = self.window(id) else {
             return false;
@@ -256,11 +261,14 @@ impl Desktop {
         let bounds = window.bounds();
         let width = bounds.width();
         let height = bounds.height();
+        let has_help = window.help_topic().is_some();
         let on_close = window.is_closable()
-            && Frame::close_span(width).is_some_and(|span| span.contains(&local.x));
+            && Frame::close_span(width, has_help).is_some_and(|span| span.contains(&local.x));
         let on_zoom = window.is_zoomable()
-            && Frame::zoom_span(width).is_some_and(|span| span.contains(&local.x));
-        let kind = if local.y == 0 && !on_close && !on_zoom {
+            && Frame::zoom_span(width, has_help).is_some_and(|span| span.contains(&local.x));
+        let on_help =
+            has_help && Frame::help_span(width).is_some_and(|span| span.contains(&local.x));
+        let kind = if local.y == 0 && !on_close && !on_zoom && !on_help {
             window.is_moveable().then_some(DragKind::Move)
         } else if local.x == width - 1 && local.y == height - 1 {
             window.is_resizable().then_some(DragKind::Resize)
@@ -459,7 +467,7 @@ mod tests {
     use super::*;
     use crate::buffer::Buffer;
     use crate::color::Style;
-    use crate::command::{CM_OK, CM_USER, CommandSet};
+    use crate::command::{CM_HELP, CM_OK, CM_USER, CommandSet};
     use crate::event::{KeyCode, KeyEvent, Modifiers, MouseButton, MouseKind};
     use crate::geometry::Size;
     use crate::theme::{Role, Theme};
@@ -1046,7 +1054,7 @@ mod tests {
         let id = desk.open(blank_window_at(rect(2, 1, 10, 5)));
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
-        let close_x = Frame::close_span(10).unwrap().start;
+        let close_x = Frame::close_span(10, false).unwrap().start;
         let down = Event::Mouse(MouseEvent {
             kind: MouseKind::Down(MouseButton::Left),
             pos: Point::new(2 + close_x, 1),
@@ -1056,6 +1064,32 @@ mod tests {
         assert_eq!(ctx.posted(), &[Event::Command(CM_CLOSE)]);
         assert!(
             desk.window(id).unwrap().bounds() == rect(2, 1, 10, 5),
+            "the click acted on the glyph, not a drag"
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_help_glyph_does_not_start_a_move_session_either() {
+        // Same as the close-glyph case above, but for the new ADR 0021 help
+        // glyph: a width-13 frame is the narrowest that still shows all three
+        // glyphs (Frame's all-or-nothing gate for a help-enabled window).
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk.open(
+            Window::new(rect(2, 1, 13, 5), "W", &Theme::default(), blank())
+                .with_help_topic("intro"),
+        );
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let help_x = Frame::help_span(13).unwrap().start;
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(2 + help_x, 1),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(desk.handle_event(&down, &mut ctx), EventResult::Consumed);
+        assert_eq!(ctx.posted(), &[Event::Command(CM_HELP)]);
+        assert!(
+            desk.window(id).unwrap().bounds() == rect(2, 1, 13, 5),
             "the click acted on the glyph, not a drag"
         );
     }

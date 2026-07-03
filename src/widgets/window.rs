@@ -25,7 +25,7 @@
 use crate::canvas::Canvas;
 use crate::cell::Cell;
 use crate::color::Style;
-use crate::command::{CM_CANCEL, CM_CLOSE, CM_ZOOM, Command};
+use crate::command::{CM_CANCEL, CM_CLOSE, CM_HELP, CM_ZOOM, Command};
 use crate::event::{Event, EventResult, KeyCode, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect, Size};
 use crate::theme::{Role, Theme};
@@ -58,6 +58,10 @@ pub struct Window {
     moveable: bool,
     closable: bool,
     zoomable: bool,
+    /// The opaque `HelpContents` topic id this window's help glyph/`F1`
+    /// targets, if any (ADR 0021) — `None` means no help glyph is drawn and
+    /// `F1` falls back to the home topic.
+    help_topic: Option<String>,
     placement: Placement,
     ending: Vec<Command>,
     default_cmd: Option<Command>,
@@ -121,6 +125,7 @@ impl Window {
             moveable: true,
             closable: true,
             zoomable: true,
+            help_topic: None,
             placement: Placement::Positioned,
             ending: Vec::new(),
             default_cmd: None,
@@ -161,6 +166,17 @@ impl Window {
     pub fn zoomable(mut self, yes: bool) -> Self {
         self.zoomable = yes;
         self.frame.set_zoomable(yes);
+        self
+    }
+
+    /// Gives the window a help topic (ADR 0021): a help glyph appears on the
+    /// title bar, immediately left of the zoom glyph, and both it and `F1`
+    /// post the existing `CM_HELP` — resolving `topic` into an actual page is
+    /// whatever catches `CM_HELP`'s job (see `docs/specs/shell.md`), not this
+    /// window's. No help glyph is drawn at all without this (the default).
+    pub fn with_help_topic(mut self, topic: impl Into<String>) -> Self {
+        self.help_topic = Some(topic.into());
+        self.frame.set_help(true);
         self
     }
 
@@ -239,6 +255,13 @@ impl Window {
     /// Whether the window is currently the active (focused) one.
     pub fn is_active(&self) -> bool {
         self.active
+    }
+
+    /// The help topic id this window's help glyph/`F1` targets, if any
+    /// (ADR 0021) — read by whatever catches `CM_HELP` (see
+    /// `docs/specs/shell.md`) to resolve an actual page.
+    pub fn help_topic(&self) -> Option<&str> {
+        self.help_topic.as_deref()
     }
 
     /// Marks the window active or not, switching its frame between the doubled
@@ -473,8 +496,9 @@ impl View for Window {
                 // neither is interactive when its flag is off (nor drawn there —
                 // see Frame), so there is nothing to hit.
                 if mouse.pos.y == 0 && matches!(mouse.kind, MouseKind::Down(MouseButton::Left)) {
+                    let has_help = self.help_topic.is_some();
                     if self.closable {
-                        if let Some(span) = Frame::close_span(self.bounds.width()) {
+                        if let Some(span) = Frame::close_span(self.bounds.width(), has_help) {
                             if span.contains(&mouse.pos.x) {
                                 ctx.post(CM_CLOSE);
                                 return EventResult::Consumed;
@@ -482,9 +506,17 @@ impl View for Window {
                         }
                     }
                     if self.zoomable {
-                        if let Some(span) = Frame::zoom_span(self.bounds.width()) {
+                        if let Some(span) = Frame::zoom_span(self.bounds.width(), has_help) {
                             if span.contains(&mouse.pos.x) {
                                 ctx.post(CM_ZOOM);
+                                return EventResult::Consumed;
+                            }
+                        }
+                    }
+                    if has_help {
+                        if let Some(span) = Frame::help_span(self.bounds.width()) {
+                            if span.contains(&mouse.pos.x) {
+                                ctx.post(CM_HELP);
                                 return EventResult::Consumed;
                             }
                         }
@@ -562,7 +594,7 @@ mod tests {
     use crate::buffer::Buffer;
     use crate::canvas::Canvas;
     use crate::color::Style;
-    use crate::command::{CM_OK, CM_USER, CommandSet};
+    use crate::command::{CM_HELP, CM_OK, CM_USER, CommandSet};
     use crate::event::{KeyCode, KeyEvent, Modifiers, MouseButton, MouseKind};
     use crate::view::{AxisMetrics, ScrollMetrics, StaticText};
     use std::cell::RefCell;
@@ -804,7 +836,7 @@ mod tests {
     #[test]
     fn close_glyph_click_posts_cm_close_only_when_closable() {
         let mut w = plain(rect(0, 0, 20, 5), blank());
-        let close_x = Frame::close_span(20).unwrap().start;
+        let close_x = Frame::close_span(20, false).unwrap().start;
         let click = Event::Mouse(MouseEvent {
             kind: MouseKind::Down(MouseButton::Left),
             pos: Point::new(close_x, 0),
@@ -827,7 +859,7 @@ mod tests {
     #[test]
     fn zoom_glyph_click_posts_cm_zoom_only_when_zoomable() {
         let mut w = plain(rect(0, 0, 20, 5), blank());
-        let zoom_x = Frame::zoom_span(20).unwrap().start;
+        let zoom_x = Frame::zoom_span(20, false).unwrap().start;
         let click = Event::Mouse(MouseEvent {
             kind: MouseKind::Down(MouseButton::Left),
             pos: Point::new(zoom_x, 0),
@@ -842,6 +874,47 @@ mod tests {
         let mut ctx = Context::new(&cs);
         assert_eq!(
             not_zoomable.handle_event(&click, &mut ctx),
+            EventResult::Ignored
+        );
+        assert!(ctx.posted().is_empty());
+    }
+
+    // --- Help topic / glyph (ADR 0021) ---
+
+    #[test]
+    fn no_help_topic_by_default() {
+        let w = plain(rect(0, 0, 20, 5), blank());
+        assert_eq!(w.help_topic(), None);
+    }
+
+    #[test]
+    fn with_help_topic_sets_the_topic_and_shows_the_glyph() {
+        let w = plain(rect(0, 0, 20, 5), blank()).with_help_topic("intro");
+        assert_eq!(w.help_topic(), Some("intro"));
+        let mut buf = Buffer::new(Size::new(20, 5));
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        assert!(buf.to_text().contains('?'), "help glyph is drawn");
+    }
+
+    #[test]
+    fn help_glyph_click_posts_cm_help_only_when_a_topic_is_set() {
+        let mut w = plain(rect(0, 0, 20, 5), blank()).with_help_topic("intro");
+        let help_x = Frame::help_span(20).unwrap().start;
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(help_x, 0),
+            modifiers: Modifiers::NONE,
+        });
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert_eq!(w.handle_event(&click, &mut ctx), EventResult::Consumed);
+        assert_eq!(ctx.posted(), &[Event::Command(CM_HELP)]);
+
+        let mut no_topic = plain(rect(0, 0, 20, 5), blank());
+        let mut ctx = Context::new(&cs);
+        assert_eq!(
+            no_topic.handle_event(&click, &mut ctx),
             EventResult::Ignored
         );
         assert!(ctx.posted().is_empty());

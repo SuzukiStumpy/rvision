@@ -39,11 +39,21 @@ need.
   it already polls the list's own selection, so the list and page jump to
   match. See [`docs/specs/help_window.md`](specs/help_window.md) and the
   `mdi` example's Overview topic.
-- **Context-sensitive help.** `open_help`-style entry points already take a
-  starting topic id; wiring real context-sensitivity (F1 opening the topic for
-  whatever currently has focus) is application-level — `HelpWindow::build`
-  itself always starts on the home topic today (a deliberate v1 scope cut, see
-  [`docs/specs/help_window.md`](specs/help_window.md)'s Open Questions).
+- ~~**Context-sensitive help.**~~ Landed at the design level (ADR 0021;
+  implementation next): scoped to *window*-level granularity rather than
+  Turbo Vision's per-view `HelpCtx`, since a `View`-trait-wide mechanism isn't
+  justified yet by one feature and one consumer. `Window` carries an optional
+  `help_topic`; `Frame` shows a glyph for it beside the zoom glyph; both the
+  glyph and `F1` post the existing, previously-unused `CM_HELP`; `Shell`
+  (opted in via `with_help`) resolves the active window's topic and opens a
+  singleton `HelpWindow` via its new `build_at` entry point. Modal dialogs
+  (`exec_view`) are excluded outright, not deferred — a modal owns input
+  exclusively until dismissed, so it was never going to be able to defer to a
+  non-modal `HelpWindow` mid-run. `edit`'s own bespoke MDI chrome doesn't use
+  `Shell`/`Desktop` yet, so it isn't reached by this until it migrates onto
+  them (separate, future work). See [`docs/adr/0021-window-scoped-context-help.md`](adr/0021-window-scoped-context-help.md),
+  [`docs/specs/window.md`](specs/window.md), [`docs/specs/help_window.md`](specs/help_window.md),
+  and [`docs/specs/shell.md`](specs/shell.md).
 - ~~**Cascading menus (submenus).**~~ Landed: a `MenuItem::submenu` opens a
   nested pull-down instead of posting a command, cascading to arbitrary depth.
   The `MenuBar` state machine generalized `open: Option<usize>` + `highlight`

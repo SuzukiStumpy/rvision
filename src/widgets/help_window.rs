@@ -68,6 +68,30 @@ impl HelpWindow {
         Window::new(bounds, title, theme, Box::new(interior))
     }
 
+    /// As [`build`](Self::build), but shows `topic` instead of the home topic
+    /// (ADR 0021) — resolved via [`HelpContents::topic_index`], mirroring how
+    /// a followed link resolves its target (ADR 0020). An unresolvable
+    /// `topic` (no such id) falls back to `contents.home()` silently, same as
+    /// [`build`](Self::build) itself.
+    pub fn build_at(
+        contents: HelpContents,
+        area: Rect,
+        title: &str,
+        theme: &Theme,
+        topic: &str,
+    ) -> Window {
+        let bounds = default_bounds(area);
+        let mut interior = Self::new(contents, bounds.size(), theme);
+        if let Some(idx) = interior.contents.topic_index(topic) {
+            interior.list.select(idx);
+            interior.shown = Some(idx);
+            if let Some(t) = interior.contents.topics().get(idx) {
+                interior.pane.show(t);
+            }
+        }
+        Window::new(bounds, title, theme, Box::new(interior))
+    }
+
     fn new(contents: HelpContents, size: Size, theme: &Theme) -> Self {
         let (list_rect, pane_rect) = split(size);
         let titles: Vec<String> = contents.titles().into_iter().map(str::to_string).collect();
@@ -411,6 +435,36 @@ Click things.
     fn build_clamps_to_a_smaller_area_without_panicking() {
         let w = HelpWindow::build(contents(), rect(0, 0, 12, 5), "Help", &Theme::default());
         assert_eq!(w.bounds().size(), Size::new(12, 5));
+    }
+
+    // --- build_at: opening straight to a given topic (ADR 0021) ---
+
+    #[test]
+    fn build_at_selects_the_given_topic_instead_of_home() {
+        let area = rect(0, 0, 80, 24);
+        let w = HelpWindow::build_at(contents(), area, "Help", &Theme::default(), "mouse");
+        let mut buf = Buffer::new(area.size());
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        let text = buf.to_text();
+        assert!(text.contains("Click things."), "shows the Mouse topic");
+        assert!(
+            !text.contains("Welcome to the thing"),
+            "not left on the home topic"
+        );
+    }
+
+    #[test]
+    fn build_at_falls_back_to_home_for_an_unresolvable_topic() {
+        let area = rect(0, 0, 80, 24);
+        let w = HelpWindow::build_at(contents(), area, "Help", &Theme::default(), "nonexistent");
+        let mut buf = Buffer::new(area.size());
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        assert!(
+            buf.to_text().contains("Welcome to the thing"),
+            "an unresolvable topic id falls back to home, not a panic"
+        );
     }
 
     // --- Selection drives the page ---

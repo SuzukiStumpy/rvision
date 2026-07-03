@@ -5,7 +5,7 @@
 - **Related ADRs:** 0016 (unify `Window`/`Dialog`, dynamic desktop), 0015 (scroll
   chrome protocol), 0017 (resize propagation protocol), 0011 (drop shadows),
   0010 (`exec_view` + focus-aware drawing), 0009 (`Shell`), 0007 (mouse),
-  0003/0004 (tree + dispatch)
+  0003/0004 (tree + dispatch), 0021 (window-scoped context help)
 
 ## Purpose
 
@@ -51,6 +51,7 @@ pub struct Window {
     moveable: bool,
     closable: bool,
     zoomable: bool,
+    help_topic: Option<String>,        // ADR 0021: opaque HelpContents topic id
     placement: Placement,
     ending: Vec<Command>,
     default_cmd: Option<Command>,
@@ -72,6 +73,7 @@ impl Window {
     pub fn with_default(self, command: Command) -> Self;
     pub fn also_ends_on(self, command: Command) -> Self;
     pub fn esc_cancels(self, yes: bool) -> Self;
+    pub fn with_help_topic(self, topic: impl Into<String>) -> Self;  // ADR 0021
 
     // Queries.
     pub fn ends_on(&self, command: Command) -> bool;
@@ -80,6 +82,7 @@ impl Window {
     pub fn is_visible(&self) -> bool;
     pub fn is_maximized(&self) -> bool;
     pub fn placement(&self) -> Placement;
+    pub fn help_topic(&self) -> Option<&str>;          // ADR 0021
 
     // Runtime mutation (existing style: plain setters).
     pub fn set_active(&mut self, active: bool);         // unchanged
@@ -126,9 +129,14 @@ impl FileDialogResult {
 ## Behaviour & invariants
 
 - **Draw.** Frame first (title, border doubled iff `active`, close glyph iff
-  `closable`, zoom glyph iff `zoomable` — reflecting `maximized` via
-  `Frame::maximized`/a new `Frame::set_maximized` mirroring `set_active`),
-  then the interior through the inset sub-canvas, as today. **Scroll chrome
+  `closable`, zoom glyph iff `zoomable`, **help glyph iff `help_topic` is
+  `Some`, drawn immediately left of the zoom glyph (ADR 0021)** — reflecting
+  `maximized` via `Frame::maximized`/`Frame::set_maximized` mirroring
+  `set_active`), then the interior through the inset sub-canvas, as today.
+  The existing `glyphs_shown(width)` all-or-nothing gate is extended to
+  budget for three glyphs instead of two, still a single boolean — a narrow
+  frame shows all of close/zoom/help or none of them (ADR 0021 rejected
+  per-glyph dropping). **Scroll chrome
   (ADR 0015):** if `interior.scroll_metrics()` returns `Some`, `Window`
   reserves one column/row per axis that needs one just inside the border,
   draws a `ScrollBar` there, and on a click/drag landing in that gutter calls
@@ -141,9 +149,13 @@ impl FileDialogResult {
   scrollable test interior.
 - **Border-glyph clicks.** A mouse-down at row 0 within `Frame::close_span`
   posts `CM_CLOSE` (only if `closable`) and consumes; within
-  `Frame::zoom_span` posts `CM_ZOOM` (only if `zoomable`) and consumes.
-  Neither glyph is interactive when its flag is off — the glyph is simply not
-  drawn there (see Draw), so there is nothing to hit.
+  `Frame::zoom_span` posts `CM_ZOOM` (only if `zoomable`) and consumes; within
+  the new help-glyph span posts the existing `CM_HELP` (only if `help_topic`
+  is `Some`) and consumes (ADR 0021) — no new `Command` id, and resolution of
+  *which* topic happens later, when whatever catches `CM_HELP` reads
+  `help_topic()` back off the active window (see [`shell.md`](shell.md)).
+  No glyph is interactive when its condition is off — each is simply not
+  drawn then (see Draw), so there is nothing to hit.
 - **Interior routing.** Unchanged: a mouse inside `interior_bounds` is
   translated and forwarded; keys/commands/broadcasts/paste go to the interior
   and its `Ignored` results bubble out (ADR 0003).
@@ -204,12 +216,15 @@ impl FileDialogResult {
 
 ## Collaborators
 
-- `Frame` (border/glyphs/title, gains `set_maximized` mirroring `set_active`),
+- `Frame` (border/glyphs/title; the help glyph is a third span alongside
+  `close_span`/`zoom_span`, ADR 0021).
   `ScrollBar`/`ScrollMetrics`/`AxisMetrics` (ADR 0015, hosting).
 - `view::{View, Group, Context}`, `command::{Command, CommandSet, CM_OK,
-  CM_CANCEL, CM_YES, CM_NO, CM_CLOSE, CM_ZOOM}` (`CM_CLOSE`/`CM_ZOOM` are new
-  framework-reserved ids, below `CM_USER`, alongside `CM_QUIT` et al. —
-  `Desktop` is what actually *acts* on them; `Window` only posts them).
+  CM_CANCEL, CM_YES, CM_NO, CM_CLOSE, CM_ZOOM, CM_HELP}` (`CM_CLOSE`/`CM_ZOOM`
+  are framework-reserved ids, below `CM_USER`, alongside `CM_QUIT` et al. —
+  `Desktop` acts on `CM_CLOSE`/`CM_ZOOM`; `CM_HELP` is acted on by `Shell`
+  (ADR 0021, see [`shell.md`](shell.md)); `Window` only ever posts any of them,
+  never acts on one itself).
 - `widgets::{Button, Label, InputLine, ListBox}` (what `MessageBox`/
   `FileDialog` compose as interiors).
 - `Desktop` (owns tree-resident `Window`s, drives drag/resize/hide/show) and
@@ -223,11 +238,14 @@ impl FileDialogResult {
   covers `ending` plus additions; `toggle_zoom` round-trips bounds and shadow;
   `hide`/`show` toggle `is_visible` (raising is `Desktop`'s test, not this
   one).
-- **Render (snapshot):** close/zoom glyphs present/absent per flag; maximized
-  glyph swap; a scroll-hosting interior gets a border `ScrollBar` in the
-  reserved gutter, a non-scrolling one doesn't.
+- **Render (snapshot):** close/zoom glyphs present/absent per flag; help
+  glyph present only when `help_topic` is `Some`, positioned left of zoom;
+  maximized glyph swap; all three glyphs drop together (not individually) on
+  a frame too narrow for them; a scroll-hosting interior gets a border
+  `ScrollBar` in the reserved gutter, a non-scrolling one doesn't.
 - **Interaction (scripted events):** click on `close_span` posts `CM_CLOSE`
-  only when `closable`; same for `CM_ZOOM`/`zoomable`; `Esc` posts
+  only when `closable`; same for `CM_ZOOM`/`zoomable`; same for the help span
+  and `CM_HELP`/`help_topic` (ADR 0021); `Esc` posts
   `CM_CANCEL` only when `esc_cancels`; `Enter` falls back to `default_cmd`
   only when the interior ignores it; a click in the scroll gutter calls
   `set_scroll` on the interior with the expected offset; `valid` delegates to
@@ -243,10 +261,6 @@ impl FileDialogResult {
 
 ## Open questions
 
-- **`Frame::set_maximized`.** Doesn't exist yet (only the consuming
-  `.maximized(bool)` builder does); needs the same `&mut self` treatment
-  `set_active` already got. Small, mechanical — resolved during
-  implementation, not a design question.
 - **Resize handle shape.** Spec assumes a single bottom-right corner grab
   point (matching `Frame`'s existing dedicated corner glyphs and classic TV
   behaviour), not full-edge resize. Revisit only if a corner turns out too

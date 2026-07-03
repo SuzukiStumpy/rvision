@@ -13,13 +13,18 @@
 //! - Window ▸ Toggle Toolbox hides/shows a fixed, non-closable toolbox
 //!   window docked to the right — `Desktop::hide`/`show`, not `open`/`close`,
 //!   since it stays resident either way.
-//! - `F1` (or Help ▸ Contents) opens a resizable two-pane `HelpWindow` (ADR
-//!   0013/0017) — a topic list beside the selected topic's page; drag its
-//!   corner to resize and watch both panes relayout live. Reopening while
-//!   it's already up just raises it instead of stacking a second one. The
-//!   Overview topic's link is followable (ADR 0020): `Ctrl+Down`/`Ctrl+Up`
-//!   cycle the page's current link, `Enter` follows it, or just click it —
-//!   either jumps the list and page to the Windows topic.
+//! - `F1` (or Help ▸ Contents, or a window's own help glyph — the one just
+//!   left of its zoom glyph) opens a resizable two-pane `HelpWindow` (ADR
+//!   0013/0017), targeted at whatever the *active* window is about (ADR
+//!   0021): a document window opens to the Windows topic, the toolbox to its
+//!   own Toolbox topic, and F1 with no window active (or one with no help
+//!   topic) falls back to the Overview topic. Drag the help window's corner
+//!   to resize it and watch both panes relayout live. Reopening while it's
+//!   already up closes and reopens it at the newly resolved topic, reusing
+//!   its position/size, rather than stacking a second one. The Overview
+//!   topic's link is followable (ADR 0020): `Ctrl+Down`/`Ctrl+Up` cycle the
+//!   page's current link, `Enter` follows it, or just click it — either
+//!   jumps the list and page to the Windows topic.
 //! - `Alt-X` (or File ▸ Exit) quits; the terminal is always restored, even on
 //!   a panic, thanks to the RAII backend (ADR 0001).
 
@@ -34,7 +39,7 @@ use rvision::canvas::Canvas;
 use rvision::cell::Cell;
 use rvision::color::Style;
 use rvision::command::{
-    CM_CLOSE, CM_NEXT, CM_PREV, CM_QUIT, CM_USER, CM_ZOOM, Command, CommandSet,
+    CM_CLOSE, CM_HELP, CM_NEXT, CM_PREV, CM_QUIT, CM_USER, CM_ZOOM, Command, CommandSet,
 };
 use rvision::crossterm_backend::CrosstermBackend;
 use rvision::event::{Event, EventResult, KeyCode, KeyEvent, Modifiers};
@@ -43,29 +48,34 @@ use rvision::help::HelpContents;
 use rvision::theme::{Role, Theme};
 use rvision::view::{Context, View};
 use rvision::widgets::{
-    Desktop, HelpWindow, Menu, MenuBar, MenuItem, StatusItem, StatusLine, Window, WindowId,
+    Desktop, Menu, MenuBar, MenuItem, StatusItem, StatusLine, Window, WindowId,
 };
 
 // Application command ids, numbered from the framework/app boundary (ADR
-// 0003). Everything else this demo triggers (close/zoom/next/prev) is a
-// framework-reserved command Desktop itself already acts on.
+// 0003). Everything else this demo triggers (close/zoom/next/prev/help) is a
+// framework-reserved command Desktop/Shell themselves already act on.
 const CM_NEW_WINDOW: Command = Command(CM_USER + 1);
 const CM_TOGGLE_TOOLBOX: Command = Command(CM_USER + 2);
-const CM_HELP: Command = Command(CM_USER + 3);
 
 /// A small hand-authored help document (ADR 0013) just to give the demo's
-/// `HelpWindow` something real to browse.
+/// `HelpWindow` something real to browse. Each document window and the
+/// toolbox carry their own `help_topic` (ADR 0021), so `F1`/the help glyph
+/// opens straight to whichever of these is about the active one.
 const HELP_SOURCE: &str = "\
 @topic overview Overview
 This desktop hosts a handful of plain document windows plus a docked
 toolbox. Drag a title bar to move a window, or its bottom-right corner
 (marked \u{25e2}) to resize it. Clicking anywhere on a window raises it.
-See the {Windows|windows} topic for the keyboard shortcuts.
+See the {Windows|windows} topic for the keyboard shortcuts. F1 (or a
+window's own help glyph) opens straight to whichever topic is about the
+active window (ADR 0021) — this one is the fallback when nothing more
+specific applies.
 
 @topic windows Windows
-Window > New Window opens another document, cascaded from the last one.
-Ctrl-W closes the active window; F5 zooms/restores it; F6 (or
-Window > Next/Previous) cycles focus between them.
+This is what a document window's own F1/help glyph opens to. Window >
+New Window opens another document, cascaded from the last one. Ctrl-W
+closes the active window; F5 zooms/restores it; F6 (or Window >
+Next/Previous) cycles focus between them.
 
 <pre>
 Ctrl+N   New Window
@@ -74,6 +84,12 @@ F5       Zoom
 F6       Next
 F9       Toggle Toolbox
 </pre>
+
+@topic toolbox Toolbox
+This is what the toolbox window's own F1/help glyph opens to instead —
+proof that two windows' `F1` can land on two different pages (ADR 0021).
+F9 (or Window > Toggle Toolbox) shows or hides it; it stays resident
+either way, so its own window state (position, size) survives a hide.
 
 @topic help This Help Window
 This window is itself resizable (ADR 0017): drag its corner and watch
@@ -116,7 +132,6 @@ struct Mdi {
     finished: bool,
     opened: u32,
     toolbox: WindowId,
-    help: Option<WindowId>,
 }
 
 impl Mdi {
@@ -139,7 +154,8 @@ impl Mdi {
                 ],
                 style: self.theme.style(Role::WindowFrame),
             }),
-        );
+        )
+        .with_help_topic("windows");
         self.shell.desktop_mut().open(window);
     }
 
@@ -151,22 +167,6 @@ impl Mdi {
         } else {
             desktop.show(self.toolbox);
         }
-    }
-
-    /// Opens the demo's `HelpWindow` (ADR 0013/0017), or just raises it if
-    /// it's already up — `Desktop::window` returning `None` is how a closed
-    /// `WindowId` is told apart from a still-resident one.
-    fn open_help(&mut self) {
-        let desktop = self.shell.desktop_mut();
-        if let Some(id) = self.help {
-            if desktop.window(id).is_some() {
-                desktop.focus(id);
-                return;
-            }
-        }
-        let contents = HelpContents::parse(HELP_SOURCE);
-        let window = HelpWindow::build(contents, desktop.bounds(), "Help", &self.theme);
-        self.help = Some(desktop.open(window));
     }
 
     /// Delivers one event to the shell, queueing whatever it posts.
@@ -195,7 +195,10 @@ impl Mdi {
                 }
                 Event::Command(cmd) if cmd == CM_NEW_WINDOW => self.open_new_window(),
                 Event::Command(cmd) if cmd == CM_TOGGLE_TOOLBOX => self.toggle_toolbox(),
-                Event::Command(cmd) if cmd == CM_HELP => self.open_help(),
+                // CM_HELP isn't intercepted here at all — Shell::with_help
+                // (below) catches it natively (ADR 0021), so it just falls
+                // to the ordinary re-dispatch arm like ADR 0016's CM_CLOSE/
+                // CM_ZOOM/CM_NEXT/CM_PREV already do.
                 _ => {
                     if budget == 0 {
                         break;
@@ -277,7 +280,8 @@ fn main() -> io::Result<()> {
     )
     .resizable(false)
     .zoomable(false)
-    .closable(false);
+    .closable(false)
+    .with_help_topic("toolbox");
     let toolbox_id = desktop.open(toolbox);
     desktop.hide(toolbox_id);
 
@@ -331,7 +335,8 @@ fn main() -> io::Result<()> {
         theme.style(Role::StatusKey),
     );
 
-    let shell = Shell::new(size, menu_bar, desktop, status, &theme);
+    let shell = Shell::new(size, menu_bar, desktop, status, &theme)
+        .with_help(HelpContents::parse(HELP_SOURCE));
     let mut demo = Mdi {
         shell,
         commands: CommandSet::new(),
@@ -339,7 +344,6 @@ fn main() -> io::Result<()> {
         finished: false,
         opened: 0,
         toolbox: toolbox_id,
-        help: None,
     };
     // Two starting windows, so there's immediately something to drag,
     // resize, and cycle between.

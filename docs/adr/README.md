@@ -32,5 +32,7 @@ workspace from the start, so it kept its original number unchanged.
 | [0017](0017-resize-propagation-per-view-protocol.md) | Resize propagation is a per-view protocol (`View::set_bounds`) |
 | [0018](0018-cascading-menu-submenus.md) | Cascading menus: a path stack, right-anchored, item-level gating |
 | [0019](0019-context-menu-anchor-request.md) | Right-click context menus: a `Context` anchor request, Shell-owned overlay |
+| [0020](0020-followable-help-links.md) | Followable help links: spans, dedicated cycle keys, a pending-activation poll |
+| [0021](0021-window-scoped-context-help.md) | Context-sensitive help: window-scoped topics via `CM_HELP` |
 
 New decision? Copy [`0000-template.md`](0000-template.md).

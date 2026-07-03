@@ -188,10 +188,14 @@ post any of the four directly — `Desktop` is what gives them effect.
   the frame's corners plus the close/zoom glyphs) so a drag can't collapse a
   window to something `interior_bounds` treats as empty forever; the exact
   floor is an implementation detail, not a design question.
-- **`HelpWindow`** (`roadmap.md`'s deferred item) becomes a `Window` wrapping
-  a composed `ListBox` + `HelpPane` interior, opened non-modally via
-  `desktop.open(...)`, once this lands — noted here as the first real
-  consumer, not designed in this pass.
+- **`HelpWindow`.** Landed: a `Window` wrapping a composed `ListBox` +
+  `HelpPane` interior, opened non-modally via `desktop.open(...)` exactly as
+  anticipated here — see [`help_window.md`](help_window.md). It has since
+  become more than just "the first real consumer": `Shell`'s ADR 0021
+  context-help handling drives the same `open`/`close`/`window`/`active_id`
+  surface to enforce a singleton help window (close the old one, reopen at a
+  newly-resolved topic, reusing its `bounds()`) — nothing further was needed
+  from `Desktop` itself for that (see [`shell.md`](shell.md)).
 - **Double-click the title bar to zoom/restore.** Windows convention, not yet
   supported: today a title-bar click (outside the close/zoom glyph spans)
   only ever starts a move session (`start_session_if_applicable`), regardless

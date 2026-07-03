@@ -13,12 +13,15 @@
 use crate::backend::{Backend, EventSource};
 use crate::buffer::Buffer;
 use crate::canvas::Canvas;
-use crate::command::{CM_QUIT, Command, CommandSet};
+use crate::command::{CM_HELP, CM_QUIT, Command, CommandSet};
 use crate::event::{Event, EventResult, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect, Size};
+use crate::help::HelpContents;
 use crate::theme::Theme;
 use crate::view::{Context, View};
-use crate::widgets::{ContextMenu, Desktop, MenuBar, Placement, StatusLine, Window};
+use crate::widgets::{
+    ContextMenu, Desktop, HelpWindow, MenuBar, Placement, StatusLine, Window, WindowId,
+};
 use std::collections::VecDeque;
 use std::io;
 use std::time::Duration;
@@ -377,6 +380,14 @@ pub struct Shell {
     /// open pull-down: first refusal on every key/mouse event while `Some`,
     /// drawn as a full-frame overlay last, after the menu bar's own.
     context_menu: Option<ContextMenu>,
+    /// App-supplied help content, opted into via `with_help` (ADR 0021).
+    /// `None` (the default) means `CM_HELP` is never caught here — it falls
+    /// through to the desktop like any other command.
+    help: Option<HelpContents>,
+    /// The singleton help window's id, if one is currently open (ADR 0021) —
+    /// `CM_HELP` closes and reopens this one, rather than letting duplicates
+    /// accumulate.
+    help_window: Option<WindowId>,
 }
 
 /// The three chrome regions for a terminal of `size`: the menu-bar row, the
@@ -416,6 +427,8 @@ impl Shell {
             size,
             theme: theme.clone(),
             context_menu: None,
+            help: None,
+            help_window: None,
         };
         shell.relayout(size);
         shell
@@ -431,6 +444,45 @@ impl Shell {
     /// windows (ADR 0016), since `Shell` owns it by value.
     pub fn desktop_mut(&mut self) -> &mut Desktop {
         &mut self.desktop
+    }
+
+    /// Opts `Shell` into handling `CM_HELP` itself (ADR 0021): it resolves
+    /// the active window's help topic and opens a singleton `HelpWindow`
+    /// there. Without this, `CM_HELP` falls through to the desktop exactly
+    /// like any other unrecognised command — zero cost, zero behaviour
+    /// change.
+    pub fn with_help(mut self, contents: HelpContents) -> Self {
+        self.help = Some(contents);
+        self
+    }
+
+    /// Resolves the active window's help topic (falling back to home with no
+    /// active window, or one with no `help_topic`) and (re)opens the
+    /// singleton help window there (ADR 0021). Only called from
+    /// `handle_event` once `self.help` is confirmed `Some`; `contents` is the
+    /// caller's clone of it, handed in rather than re-read to keep this
+    /// function total over its inputs.
+    fn open_help(&mut self, contents: HelpContents, ctx: &mut Context) {
+        let topic = self
+            .desktop
+            .active_id()
+            .and_then(|id| self.desktop.window(id))
+            .and_then(Window::help_topic)
+            .map(str::to_string);
+        let area = self.desktop.bounds();
+        let mut window = match &topic {
+            Some(t) => HelpWindow::build_at(contents, area, "Help", &self.theme, t),
+            None => HelpWindow::build(contents, area, "Help", &self.theme),
+        };
+        // The singleton: reuse the old window's position/size if one was
+        // open, then close it — a fresh one just opens centred instead.
+        if let Some(old_id) = self.help_window {
+            if let Some(old) = self.desktop.window(old_id) {
+                window.set_bounds(old.bounds());
+            }
+            self.desktop.close(old_id, ctx);
+        }
+        self.help_window = Some(self.desktop.open(window));
     }
 
     /// Repositions the three children for a terminal of `size`.
@@ -549,7 +601,18 @@ impl View for Shell {
             Event::Mouse(mouse) => self.handle_mouse(*mouse, ctx),
             // A re-dispatched command (ADR 0003) goes to the active window; CM_QUIT
             // never reaches here — `Root` claims it before re-dispatch.
-            Event::Command(_) => self.desktop.handle_event(event, ctx),
+            // `CM_HELP` is the one exception, caught here rather than left to
+            // fall through, whenever `help` is `Some` (ADR 0021) — see
+            // `open_help`.
+            Event::Command(command) => {
+                if *command == CM_HELP {
+                    if let Some(contents) = self.help.clone() {
+                        self.open_help(contents, ctx);
+                        return EventResult::Consumed;
+                    }
+                }
+                self.desktop.handle_event(event, ctx)
+            }
             // A paste goes to the active window, like a key (ADR 0012).
             Event::Paste(_) => self.desktop.handle_event(event, ctx),
             Event::Resize(size) => {
@@ -907,7 +970,6 @@ mod tests {
     // --- Shell: the TProgram-style application root (Phase 4) ---
 
     const CM_PING: Command = Command(CM_USER + 10);
-    const CM_HELP: Command = Command(CM_USER + 11);
 
     /// Builds a shell with one window whose interior posts [`CM_PING`] on `a`, a
     /// File/Edit menu bar, and an F1/Alt-X status line.
@@ -1134,6 +1196,191 @@ mod tests {
             shell.valid(CM_OK, &mut ctx),
             "the window only refuses CM_QUIT, so an unrelated command passes"
         );
+    }
+
+    // --- CM_HELP handling (ADR 0021) ---
+
+    fn help_contents() -> HelpContents {
+        HelpContents::parse("@topic home Home\nHome body.\n\n@topic other Other\nOther body.")
+    }
+
+    fn blank_interior() -> Box<dyn View> {
+        Box::new(StaticText::new(full(Size::new(1, 1)), "", Style::new()))
+    }
+
+    /// A shell with one window (interior: `blank_interior`, or `interior` if
+    /// given) and, unless `help` is `None`, opted into `CM_HELP` handling.
+    fn shell_for_help(size: Size, help: Option<HelpContents>, window: Window) -> Shell {
+        let theme = Theme::default();
+        let menu_bar = MenuBar::new(full(Size::new(size.width, 1)), vec![], &theme);
+        let mut desktop = Desktop::new(
+            Rect::from_origin_size(Point::new(0, 1), Size::new(size.width, size.height - 2)),
+            Cell::default(),
+        );
+        desktop.open(window);
+        let status = StatusLine::new(
+            Rect::from_origin_size(Point::new(0, size.height - 1), Size::new(size.width, 1)),
+            vec![],
+            theme.style(Role::StatusBar),
+            theme.style(Role::StatusKey),
+        );
+        let mut shell = Shell::new(size, menu_bar, desktop, status, &theme);
+        if let Some(contents) = help {
+            shell = shell.with_help(contents);
+        }
+        shell
+    }
+
+    #[test]
+    fn cm_help_falls_through_to_the_desktop_when_help_is_not_configured() {
+        let received = Rc::new(RefCell::new(Vec::new()));
+        let window = Window::new(
+            Rect::from_origin_size(Point::new(0, 0), Size::new(10, 4)),
+            "W",
+            &Theme::default(),
+            Box::new(Poster {
+                bounds: full(Size::new(8, 2)),
+                on_key: KeyCode::Char('x'), // unused: this test drives Command directly
+                command: Command(CM_USER + 40),
+                received: Rc::clone(&received),
+            }),
+        );
+        let mut sh = shell_for_help(Size::new(40, 10), None, window);
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        sh.handle_event(&Event::Command(CM_HELP), &mut ctx);
+        assert_eq!(
+            *received.borrow(),
+            vec![CM_HELP],
+            "with no help configured, CM_HELP reaches the desktop like any other command"
+        );
+    }
+
+    #[test]
+    fn cm_help_opens_a_help_window_on_the_active_windows_topic() {
+        let window = Window::new(
+            Rect::from_origin_size(Point::new(0, 0), Size::new(10, 4)),
+            "W",
+            &Theme::default(),
+            blank_interior(),
+        )
+        .with_help_topic("other");
+        let mut sh = shell_for_help(Size::new(40, 10), Some(help_contents()), window);
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        sh.handle_event(&Event::Command(CM_HELP), &mut ctx);
+
+        let mut frame = Buffer::new(Size::new(40, 10));
+        let mut canvas = Canvas::new(&mut frame);
+        sh.draw(&mut canvas);
+        let text = frame.to_text();
+        assert!(text.contains("Other body."), "opened on the resolved topic");
+    }
+
+    #[test]
+    fn cm_help_falls_back_to_home_with_no_active_window() {
+        // An empty desktop: active_id() is None, so the topic lookup itself
+        // has nothing to read — home is the only sensible fallback.
+        let theme = Theme::default();
+        let menu_bar = MenuBar::new(full(Size::new(40, 1)), vec![], &theme);
+        let desktop = Desktop::new(
+            Rect::from_origin_size(Point::new(0, 1), Size::new(40, 8)),
+            Cell::default(),
+        );
+        let status = StatusLine::new(
+            Rect::from_origin_size(Point::new(0, 9), Size::new(40, 1)),
+            vec![],
+            theme.style(Role::StatusBar),
+            theme.style(Role::StatusKey),
+        );
+        let mut sh = Shell::new(Size::new(40, 10), menu_bar, desktop, status, &theme)
+            .with_help(help_contents());
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        sh.handle_event(&Event::Command(CM_HELP), &mut ctx);
+
+        let mut frame = Buffer::new(Size::new(40, 10));
+        let mut canvas = Canvas::new(&mut frame);
+        sh.draw(&mut canvas);
+        assert!(frame.to_text().contains("Home body."));
+    }
+
+    #[test]
+    fn a_second_cm_help_reopens_the_singleton_preserving_bounds_and_switching_topic() {
+        let size = Size::new(60, 20);
+        let theme = Theme::default();
+        let menu_bar = MenuBar::new(full(Size::new(size.width, 1)), vec![], &theme);
+        let mut desktop = Desktop::new(
+            Rect::from_origin_size(Point::new(0, 1), Size::new(size.width, size.height - 2)),
+            Cell::default(),
+        );
+        let a = desktop.open(
+            Window::new(
+                Rect::from_origin_size(Point::new(0, 0), Size::new(10, 4)),
+                "A",
+                &theme,
+                blank_interior(),
+            )
+            .with_help_topic("home"),
+        );
+        let b = desktop.open(
+            Window::new(
+                Rect::from_origin_size(Point::new(12, 0), Size::new(10, 4)),
+                "B",
+                &theme,
+                blank_interior(),
+            )
+            .with_help_topic("other"),
+        );
+        let status = StatusLine::new(
+            Rect::from_origin_size(Point::new(0, size.height - 1), Size::new(size.width, 1)),
+            vec![],
+            theme.style(Role::StatusBar),
+            theme.style(Role::StatusKey),
+        );
+        let mut sh = Shell::new(size, menu_bar, desktop, status, &theme).with_help(help_contents());
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+
+        sh.desktop_mut().focus(a);
+        sh.handle_event(&Event::Command(CM_HELP), &mut ctx);
+        let help_id_1 = sh.desktop_mut().active_id().unwrap();
+        let bounds_1 = sh.desktop_mut().window(help_id_1).unwrap().bounds();
+
+        // Simulate the user having dragged the help window elsewhere.
+        let moved = Rect::from_origin_size(Point::new(5, 3), bounds_1.size());
+        sh.desktop_mut()
+            .window_mut(help_id_1)
+            .unwrap()
+            .set_bounds(moved);
+
+        sh.desktop_mut().focus(b);
+        sh.handle_event(&Event::Command(CM_HELP), &mut ctx);
+        let help_id_2 = sh.desktop_mut().active_id().unwrap();
+
+        assert_ne!(
+            help_id_1, help_id_2,
+            "closed and reopened, not retargeted in place"
+        );
+        assert!(
+            sh.desktop_mut().window(help_id_1).is_none(),
+            "the old help window is gone"
+        );
+        assert_eq!(
+            sh.desktop_mut().window(help_id_2).unwrap().bounds(),
+            moved,
+            "position/size carried over from the closed one"
+        );
+
+        let mut frame = Buffer::new(size);
+        let mut canvas = Canvas::new(&mut frame);
+        sh.draw(&mut canvas);
+        let text = frame.to_text();
+        assert!(
+            text.contains("Other body."),
+            "shows the newly resolved topic"
+        );
+        assert!(!text.contains("Home body."), "not still on the old one");
     }
 
     // --- Context menu anchor propagation (ADR 0019) ---

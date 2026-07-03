@@ -5,7 +5,7 @@
 - **Related ADRs:** 0013 (help format and topic model), 0016 (unify
   `Window`/`Dialog`, dynamic desktop), 0017 (resize propagation protocol),
   0015 (scroll chrome protocol), 0009 (`Shell`), 0007 (mouse), 0020
-  (followable help links)
+  (followable help links), 0021 (window-scoped context help)
 
 ## Purpose
 
@@ -19,9 +19,12 @@ and keeps them in sync: moving the list selection shows that topic's page.
 
 It is **not** a modal help viewer (`edit`'s own, ADR 0013's "viewer surface"
 question) and **not** the format/parser (`HelpContents`/`HelpTopic`/`Block`,
-already done — ADR 0013). It is also not context-sensitive (jumping straight
-to a topic for whatever has focus) — that's application-level and still
-waits on nothing this module provides beyond an opened window (roadmap).
+already done — ADR 0013). It is also not *itself* what makes help
+context-sensitive — deciding *which* topic to show is `Shell`'s job (ADR
+0021, see [`shell.md`](shell.md)), reading a window's `help_topic`. This
+module's own contribution to that is narrower and purely mechanical:
+`build_at` (below), a way to construct the window already showing a given
+topic instead of always the home one.
 
 ## Public interface
 
@@ -45,6 +48,15 @@ impl HelpWindow {
     /// dialog: nothing about a help browser calls for `exec_view`'s ending/
     /// `Esc`-cancels policy.
     pub fn build(contents: HelpContents, area: Rect, title: &str, theme: &Theme) -> Window;
+
+    /// As [`build`](Self::build), but shows `topic` instead of the home topic
+    /// (ADR 0021) — resolved via the existing `HelpContents::topic_index`,
+    /// mirroring how a followed link resolves its target (ADR 0020). An
+    /// unresolvable `topic` (no such id) falls back to `contents.home()`
+    /// silently, the same miss-handling as everywhere else a topic id is
+    /// resolved — not a new failure mode to design around. Additive: `build`
+    /// itself is unchanged, still the right call for "just open to home."
+    pub fn build_at(contents: HelpContents, area: Rect, title: &str, theme: &Theme, topic: &str) -> Window;
 }
 
 impl View for HelpWindow {
@@ -133,7 +145,9 @@ with two targets instead of four.
 
 - **Logic:** `build` selects `contents.home()`'s index in the list and shows
   its body in the pane; an empty `HelpContents` builds without panicking and
-  leaves the list/pane empty; `set_bounds` re-splits list/pane widths
+  leaves the list/pane empty; `build_at` selects the given topic's index and
+  shows its body instead, and falls back to `contents.home()` for an
+  unresolvable topic id (ADR 0021); `set_bounds` re-splits list/pane widths
   (narrow window shrinks the list column, never the reverse) and cascades to
   both children (a fake/spy is unnecessary here — `ListBox::rows()`/
   `HelpPane::content_height()` behaviour after resize is directly observable,
@@ -163,11 +177,13 @@ with two targets instead of four.
 
 ## Open questions
 
-- **Starting topic.** `build` always starts at `contents.home()` (the first
-  declared topic). Opening straight to a specific topic id (context-
-  sensitive help, `roadmap.md`) is application-level and deferred there, per
-  ADR 0013's own scope cut — not designed here to avoid a speculative
-  parameter with no current caller.
+- **Starting topic.** Resolved (ADR 0021): `build_at` opens straight to a
+  given topic id, resolved the same way a followed link's target is
+  (`HelpContents::topic_index`, ADR 0020), falling back to home on a miss.
+  `build` itself is untouched and still the right call when there's no
+  specific topic to open to. Deciding *which* topic id to pass — the actual
+  "F1 for whatever's focused" behaviour — is `Shell`'s job, not this
+  module's (ADR 0021, [`shell.md`](shell.md)).
 - **A visible page-title header row.** Considered and cut for v1 (see
   Behaviour & invariants) to keep the composite to exactly two child widgets
   and one layout split; revisit only if the list's selection highlight
