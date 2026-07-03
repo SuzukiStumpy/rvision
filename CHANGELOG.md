@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.1.0](https://github.com/SuzukiStumpy/rvision/compare/v1.0.0...v1.1.0) (2026-07-03)
+
+
+### Features
+
+* add ColorPicker widget (roadmap [#2](https://github.com/SuzukiStumpy/rvision/issues/2)) ([6b4cac1](https://github.com/SuzukiStumpy/rvision/commit/6b4cac136aab0d416f3c7b1203a365a6ea96dbb2))
+* add layered resource loader (ADR 0024, roadmap [#9](https://github.com/SuzukiStumpy/rvision/issues/9)) ([5ff67de](https://github.com/SuzukiStumpy/rvision/commit/5ff67de81b1c2b8223aa7b063aad49fa474798f7))
+* add theme file format and merge function (ADR 0025, roadmap [#9](https://github.com/SuzukiStumpy/rvision/issues/9)) ([55efbf2](https://github.com/SuzukiStumpy/rvision/commit/55efbf22e8e2de22c971d86255fc1d0cf2440791))
+* add ThemeEditor widget with Restore Defaults (roadmap [#2](https://github.com/SuzukiStumpy/rvision/issues/2)/[#3](https://github.com/SuzukiStumpy/rvision/issues/3), ADR 0026) ([7145a09](https://github.com/SuzukiStumpy/rvision/commit/7145a09c79a1c196d3d70e70688dd0127023bc16))
+* detect terminal truecolour capability (ADR 0023) ([c975abe](https://github.com/SuzukiStumpy/rvision/commit/c975abe4b8a923b500a5715da712583c650ebf46))
+
+
+### Bug Fixes
+
+* ColorPicker OK click didn't commit the selected colour ([dba4ae2](https://github.com/SuzukiStumpy/rvision/commit/dba4ae25a8132f326f982c4f05c03e0d1d1417d1))
+
 ## [1.0.0](https://github.com/SuzukiStumpy/rvision/compare/v0.1.0...v1.0.0) (2026-07-03)
 
 
