@@ -17,6 +17,7 @@
 mod background;
 mod button;
 mod check_box;
+mod color_picker;
 mod context_menu;
 mod desktop;
 mod file_dialog;
@@ -36,6 +37,7 @@ mod window;
 pub use background::Background;
 pub use button::Button;
 pub use check_box::CheckBox;
+pub use color_picker::{ColorPicker, ColorPickerResult};
 pub(crate) use context_menu::ContextMenu;
 pub use desktop::{Desktop, WindowId};
 pub use file_dialog::{FileDialog, FileDialogResult};

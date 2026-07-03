@@ -10,10 +10,15 @@
 //!    toggles the check box, `Enter` is the default *OK*, `Esc` cancels;
 //! 3. a file *Open* dialog — type a name or pick from the list; `Enter` on a
 //!    folder navigates into it, `Enter` on a file (or *Open*) accepts;
-//! 4. a closing box reporting what you picked.
+//! 4. a colour picker (`docs/specs/color_picker.md`) seeded at Cyan — arrows
+//!    move the swatch grid, and (only if `ColorProfile::detect()` reports
+//!    `Truecolor` — try running with `COLORTERM=truecolor` set, and again
+//!    unset, to see the gating) `Tab` reaches RGB/hex custom entry with a
+//!    toggle between them;
+//! 5. a closing box reporting what you picked.
 //!
-//! The chosen file and the settings result are printed after the terminal is
-//! restored (the RAII backend, ADR 0001).
+//! The chosen file, colour, and the settings result are printed after the
+//! terminal is restored (the RAII backend, ADR 0001).
 
 use std::io;
 use std::path::PathBuf;
@@ -22,7 +27,7 @@ use std::time::Duration;
 use rvision::app::{Application, Program};
 use rvision::buffer::Buffer;
 use rvision::cell::Cell;
-use rvision::color::Style;
+use rvision::color::{Color, Color16, ColorProfile, Style};
 use rvision::command::{CM_OK, Command};
 use rvision::crossterm_backend::CrosstermBackend;
 use rvision::event::{Event, EventResult};
@@ -30,7 +35,7 @@ use rvision::geometry::{Point, Rect, Size};
 use rvision::theme::{Role, Theme};
 use rvision::view::{Group, View};
 use rvision::widgets::{
-    Button, CheckBox, FileDialog, InputLine, Label, MessageBox, RadioButtons, Window,
+    Button, CheckBox, ColorPicker, FileDialog, InputLine, Label, MessageBox, RadioButtons, Window,
 };
 
 fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
@@ -120,6 +125,19 @@ fn main() -> io::Result<()> {
         None
     };
 
+    let profile = ColorProfile::detect();
+    let (mut color_picker, color_result) = ColorPicker::pick(
+        "Pick a Colour",
+        Color::Named(Color16::Cyan),
+        profile,
+        &theme,
+    );
+    let picked_color = if app.exec_view(&mut backdrop, &mut color_picker)? == CM_OK {
+        Some(color_result.color())
+    } else {
+        None
+    };
+
     let summary = match &picked {
         Some(path) => format!("Opened: {}", path.display()),
         None => "No file opened.".to_string(),
@@ -131,6 +149,10 @@ fn main() -> io::Result<()> {
     println!("Settings closed with command {settings_result:?}");
     if let Some(path) = picked {
         println!("Picked file: {}", path.display());
+    }
+    println!("Colour profile detected: {profile:?}");
+    if let Some(color) = picked_color {
+        println!("Picked colour: {color:?}");
     }
     Ok(())
 }

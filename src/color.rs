@@ -46,6 +46,27 @@ pub enum Color16 {
 }
 
 impl Color16 {
+    /// Every variant, in discriminant order — the CGA grid layout order for a
+    /// [`ColorPicker`](crate::widgets::ColorPicker), mirroring [`Role::ALL`](crate::theme::Role).
+    pub const ALL: [Color16; 16] = [
+        Color16::Black,
+        Color16::Blue,
+        Color16::Green,
+        Color16::Cyan,
+        Color16::Red,
+        Color16::Magenta,
+        Color16::Brown,
+        Color16::LightGray,
+        Color16::DarkGray,
+        Color16::LightBlue,
+        Color16::LightGreen,
+        Color16::LightCyan,
+        Color16::LightRed,
+        Color16::LightMagenta,
+        Color16::Yellow,
+        Color16::White,
+    ];
+
     /// Returns the colour's canonical CGA RGB value.
     pub const fn to_rgb(self) -> (u8, u8, u8) {
         match self {
@@ -233,6 +254,15 @@ mod tests {
     use super::*;
 
     // Tracer bullet: the named palette resolves to canonical CGA RGB values.
+    #[test]
+    fn color16_all_lists_every_variant_in_discriminant_order() {
+        assert_eq!(Color16::ALL.len(), 16);
+        assert_eq!(Color16::ALL[0], Color16::Black);
+        assert_eq!(Color16::ALL[7], Color16::LightGray);
+        assert_eq!(Color16::ALL[8], Color16::DarkGray);
+        assert_eq!(Color16::ALL[15], Color16::White);
+    }
+
     #[test]
     fn color16_maps_to_canonical_cga_rgb() {
         assert_eq!(Color16::Black.to_rgb(), (0, 0, 0));

@@ -1,0 +1,11 @@
+---
+source: src/widgets/color_picker.rs
+assertion_line: 1193
+expression: buf.to_text()
+---
+┌─────────── Colour ───────────┐
+│   [ ]                        │
+│                              │
+│                              │
+│          OK        Cancel    │
+└──────────────────────────────┘

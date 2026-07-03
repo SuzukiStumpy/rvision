@@ -1,6 +1,7 @@
 # Module spec: `rvision::widgets::color_picker`
 
-- **Status:** Draft
+- **Status:** In progress (core control + `pick()` implemented and tested per
+  the plan below; manual terminal pass still open)
 - **Phase:** unscheduled (roadmap backlog #2)
 - **Related ADRs:** 0005 (semantic roles over a truecolour-ready type), 0007
   (mouse), 0010 (modal dialogs & focus-aware controls), 0016 (unified
@@ -157,13 +158,17 @@ impl ColorPicker {
 
 ## Open questions
 
-- Exact grid-cursor placement when seeding from an `Rgb` that doesn't exactly
-  match any of the 16 swatches (nearest-match highlight vs. a fixed first
-  cell) — an implementation detail, doesn't affect the public interface or
-  result correctness.
-- Whether the mode toggle is a dedicated `Button` or a keyboard-only
-  affordance (e.g. `Ctrl+Tab`) with no persistent visible control — leaning
-  `Button` for mouse/discoverability parity (ADR 0007), not pinned down.
+- Resolved: seeding from an `Rgb` that doesn't exactly match any swatch places
+  the grid cursor at the fixed first cell (index 0) — confirmed as an
+  implementation detail with no effect on the public interface or result
+  correctness.
+- Resolved: the mode toggle is a persistent, focusable, click-and-keyboard
+  control in the tab order (not a hidden modifier-key shortcut) — mouse/
+  discoverability parity won out (ADR 0007). It draws in
+  `Role::ButtonFocused`/`Role::ButtonNormal` like a real button but is
+  hand-rolled rather than an embedded [`Button`](crate::widgets::Button),
+  since its activation must flip `ColorPicker`'s own internal mode rather
+  than post a bubbling `Command` the way `Button` always does.
 - Once the theme editor (#2) is actually scoped, whether it wants
   `ColorPicker` embedded inline (two side-by-side instances for fg/bg) or
   invoked modally per-field via `pick` — affects nothing here, deferred to

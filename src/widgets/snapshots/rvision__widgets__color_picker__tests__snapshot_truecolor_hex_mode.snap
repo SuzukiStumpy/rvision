@@ -1,0 +1,11 @@
+---
+source: src/widgets/color_picker.rs
+assertion_line: 1075
+expression: render(&p)
+---
+   [ ]                        
+                              
+                              
+#:0000AA               RGB    
+                              
+          OK        Cancel

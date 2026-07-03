@@ -1,0 +1,9 @@
+---
+source: src/widgets/color_picker.rs
+assertion_line: 1058
+expression: render(&cga16())
+---
+   [ ]                        
+                              
+                              
+          OK        Cancel

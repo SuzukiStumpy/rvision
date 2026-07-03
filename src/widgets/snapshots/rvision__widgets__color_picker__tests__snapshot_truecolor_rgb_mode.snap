@@ -1,0 +1,11 @@
+---
+source: src/widgets/color_picker.rs
+assertion_line: 1063
+expression: render(&truecolor())
+---
+   [ ]                        
+                              
+                              
+R:0    G:0    B:170    Hex    
+                              
+          OK        Cancel
