@@ -2,13 +2,16 @@
 
 - **Status:** In progress
 - **Phase:** 1
-- **Related ADRs:** 0005 (semantic roles over a truecolour-ready type)
+- **Related ADRs:** 0005 (semantic roles over a truecolour-ready type), 0023
+  (truecolour capability detection)
 
 ## Purpose
 
 Represent colours and text styling in a way that is **truecolour-ready from day
 one** but ships 16-colour CGA values first. Pure value types; no terminal I/O and
-no role/theme logic (that lives in `theme`).
+no role/theme logic (that lives in `theme`). Also carries the one fact a future
+theme resolver needs to choose between a truecolour and 16-colour rendering of
+itself: whether the terminal is believed to support 24-bit colour.
 
 ## Public interface
 
@@ -30,6 +33,9 @@ impl Attributes {
 
 pub struct Style { pub fg: Color, pub bg: Color, pub attrs: Attributes }
 impl Style { fn new(); fn fg(self, Color); fn bg(self, Color); fn attrs(self, Attributes); }
+
+pub enum ColorProfile { Truecolor, Cga16 }
+impl ColorProfile { fn detect() -> Self; } // reads COLORTERM / TERM once (ADR 0023)
 ```
 
 ## Behaviour & invariants
@@ -42,12 +48,24 @@ impl Style { fn new(); fn fg(self, Color); fn bg(self, Color); fn attrs(self, At
   bits of `x` are set; `NONE`/`empty()` contains nothing.
 - `Style` default is `Default` fg/bg with no attributes; builder methods are
   chainable and return a new `Style`.
+- `ColorProfile::detect()` treats `COLORTERM` of `truecolor`/`24bit`
+  (case-insensitive) as authoritative; failing that, a `TERM` containing
+  `direct` (e.g. `xterm-direct`) also counts as truecolour. Anything else is
+  `Cga16` — detection is deliberately conservative (a false "no" degrades to a
+  smaller palette; a false "yes" would risk garbled escapes).
+- The env-reading part of `detect()` is a thin, untested-by-necessity wrapper;
+  the actual decision is a pure function taking both variables as `Option<&str>`,
+  so the policy is unit-tested without touching real process environment
+  (same shape as `crossterm_backend`'s clock-injected double-click detection).
 
 ## Collaborators
 
 Consumed by `theme` (roles → `Style`), by `cell` (each cell carries a `Style`),
-and by the backend (which turns `Color`/`Attributes` into escape sequences in
-Phase 2). Depends on nothing.
+and by the backend (which turns `Color`/`Attributes` into escape sequences).
+`ColorProfile` has no consumer inside `rvision` yet — it's a standalone fact for
+the future resource loader (roadmap backlog #9) or a hand-authored theme pair to
+consult when choosing between a theme's truecolour and fallback styles. Depends
+on nothing.
 
 ## Test plan (vertical slices)
 
@@ -55,7 +73,14 @@ Phase 2). Depends on nothing.
 2. `Color::resolve_rgb`: Named via Color16; Rgb returns itself; Default -> None.
 3. `Attributes`: empty contains nothing; union + contains; BitOr sugar.
 4. `Style`: default is blank; chained builders set fg/bg/attrs.
+5. `ColorProfile`'s pure decision function: `COLORTERM=truecolor`/`24bit`
+   (and case variants) -> `Truecolor`; a `direct`-containing `TERM` with no
+   `COLORTERM` -> `Truecolor`; absence of both, or an unrelated value of
+   either -> `Cga16`.
 
 ## Open questions
 
-- ANSI 0..15 index mapping for `Color16` is deferred to the backend (Phase 2).
+- ANSI 0..15 index mapping for `Color16` was deferred to the backend; resolved
+  in `crossterm_backend::to_ct_color`, which maps each `Color16` to crossterm's
+  named palette (so the user's own terminal theme applies) rather than a fixed
+  ANSI index.

@@ -4,7 +4,7 @@ Each record captures one significant decision: its context, the choice, and the
 consequences. They are append-only history — supersede with a new ADR rather than
 rewriting an old one.
 
-Numbers 0001–0007 and 0015–0017/0020/0022/0023 below are inherited, renumbered,
+Numbers 0001–0007 and 0015–0017/0020/0022 below are inherited, renumbered,
 from `rvision`'s original home in the [`edit`](https://github.com/SuzukiStumpy/edit)
 monorepo, where it lived alongside the editor before being extracted into this
 repository. Decisions specific to the editor itself stayed behind there. ADR
@@ -35,5 +35,6 @@ workspace from the start, so it kept its original number unchanged.
 | [0020](0020-followable-help-links.md) | Followable help links: spans, dedicated cycle keys, a pending-activation poll |
 | [0021](0021-window-scoped-context-help.md) | Context-sensitive help: window-scoped topics via `CM_HELP` |
 | [0022](0022-release-process-and-versioning.md) | Release process: `release-please`, single-crate config, cut v1.0.0 |
+| [0023](0023-truecolour-capability-detection.md) | Truecolour capability detection: `ColorProfile::detect`, env vars, no new crate |
 
 New decision? Copy [`0000-template.md`](0000-template.md).

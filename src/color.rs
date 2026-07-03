@@ -187,6 +187,47 @@ impl Style {
     }
 }
 
+/// The colour depth a terminal is believed to support (ADR 0023). A future
+/// theme resolver (or a hand-authored theme pair) consults this to choose
+/// between a theme's truecolour styles and its 16-colour fallback; `color`
+/// itself has no such consumer yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ColorProfile {
+    /// The terminal understands 24-bit RGB escape sequences.
+    Truecolor,
+    /// Only the 16-colour CGA/EGA palette should be assumed.
+    Cga16,
+}
+
+impl ColorProfile {
+    /// Detects the running terminal's colour capability from the process
+    /// environment. The one impure entry point — the decision itself is the
+    /// pure, unit-tested [`profile_from_env`].
+    pub fn detect() -> Self {
+        profile_from_env(
+            std::env::var("COLORTERM").ok().as_deref(),
+            std::env::var("TERM").ok().as_deref(),
+        )
+    }
+}
+
+/// The pure decision behind [`ColorProfile::detect`]: a `COLORTERM` of
+/// `truecolor`/`24bit` (case-insensitive) is authoritative; failing that, a
+/// `TERM` containing `direct` (e.g. `xterm-direct`) also indicates truecolour.
+/// Anything else assumes `Cga16` — under-detection just means an
+/// unnecessarily cautious fallback, not broken output.
+fn profile_from_env(colorterm: Option<&str>, term: Option<&str>) -> ColorProfile {
+    let truecolor_colorterm = colorterm
+        .map(|v| v.eq_ignore_ascii_case("truecolor") || v.eq_ignore_ascii_case("24bit"))
+        .unwrap_or(false);
+    let truecolor_term = term.map(|v| v.contains("direct")).unwrap_or(false);
+    if truecolor_colorterm || truecolor_term {
+        ColorProfile::Truecolor
+    } else {
+        ColorProfile::Cga16
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -225,6 +266,39 @@ mod tests {
 
         // `union` is equivalent to the `|` operator.
         assert_eq!(Attributes::BOLD.union(Attributes::UNDERLINE), combo);
+    }
+
+    #[test]
+    fn profile_from_env_detects_colorterm_truecolor_variants() {
+        assert_eq!(
+            profile_from_env(Some("truecolor"), None),
+            ColorProfile::Truecolor
+        );
+        assert_eq!(
+            profile_from_env(Some("TrueColor"), None),
+            ColorProfile::Truecolor
+        );
+        assert_eq!(
+            profile_from_env(Some("24bit"), None),
+            ColorProfile::Truecolor
+        );
+    }
+
+    #[test]
+    fn profile_from_env_falls_back_to_term_direct() {
+        assert_eq!(
+            profile_from_env(None, Some("xterm-direct")),
+            ColorProfile::Truecolor
+        );
+    }
+
+    #[test]
+    fn profile_from_env_defaults_to_cga16() {
+        assert_eq!(profile_from_env(None, None), ColorProfile::Cga16);
+        assert_eq!(
+            profile_from_env(Some("256color"), Some("xterm-256color")),
+            ColorProfile::Cga16
+        );
     }
 
     #[test]
