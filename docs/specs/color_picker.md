@@ -1,7 +1,13 @@
 # Module spec: `rvision::widgets::color_picker`
 
-- **Status:** In progress (core control + `pick()` implemented and tested per
-  the plan below; manual terminal pass still open)
+- **Status:** Done. Manual terminal pass done (while building the theme
+  editor, ADR 0026, which drives this via mouse): found and fixed a bug where
+  clicking *OK* posted `CM_OK` via the plain `Button` widget without ever
+  calling `ColorPicker::accept`, so the result handle stayed at its
+  never-set `Color::Default` regardless of the selected swatch — only
+  `Enter` (`on_enter` → `accept`) updated it correctly. `click_buttons`'s `OK`
+  branch now calls `accept` directly; regression test
+  `a_click_on_ok_writes_the_tentative_color_into_the_result_handle`.
 - **Phase:** unscheduled (roadmap backlog #2)
 - **Related ADRs:** 0005 (semantic roles over a truecolour-ready type), 0007
   (mouse), 0010 (modal dialogs & focus-aware controls), 0016 (unified

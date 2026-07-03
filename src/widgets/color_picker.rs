@@ -591,7 +591,12 @@ impl ColorPicker {
         if self.ok.bounds().contains(m.pos) {
             self.focus = Focus::Ok;
             self.apply_focus();
-            return self.ok.handle_event(&Event::Mouse(*m), ctx);
+            // Not `self.ok.handle_event(...)`: that only posts `CM_OK` (a
+            // plain `Button` doesn't know about `accept`'s extra step of
+            // writing the tentative colour into `result`) -- the same
+            // accept path `on_enter` uses for the keyboard.
+            self.accept(ctx);
+            return EventResult::Consumed;
         }
         if self.cancel.bounds().contains(m.pos) {
             self.focus = Focus::Cancel;
@@ -1113,6 +1118,29 @@ mod tests {
         });
         assert_eq!(p.handle_event(&click, &mut ctx), EventResult::Consumed);
         assert_eq!(ctx.posted(), &[Event::Command(CM_OK)]);
+    }
+
+    #[test]
+    fn a_click_on_ok_writes_the_tentative_color_into_the_result_handle() {
+        // Regression: clicking OK routed the mouse event straight into the
+        // `Button` widget, which only posts `CM_OK` -- it never calls
+        // `ColorPicker::accept`, so `result` (read via `ColorPickerResult`
+        // after the modal ends) stayed at its never-set `Color::Default`
+        // regardless of what was actually selected. Enter went through
+        // `on_enter` -> `accept` and worked correctly, which is what made
+        // this so easy to miss with keyboard-only manual testing.
+        let mut p = cga16(); // starts at Blue, index 1
+        press(&mut p, KeyCode::Right); // -> Green
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: p.ok.bounds().origin(),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(p.handle_event(&click, &mut ctx), EventResult::Consumed);
+        assert_eq!(ctx.posted(), &[Event::Command(CM_OK)]);
+        assert_eq!(*p.result.borrow(), Color::Named(Color16::Green));
     }
 
     // A stray application command must never be confused with the picker's
