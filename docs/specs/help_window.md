@@ -4,7 +4,8 @@
 - **Phase:** post-extraction rework (help system, unblocked by SDI/MDI convergence)
 - **Related ADRs:** 0013 (help format and topic model), 0016 (unify
   `Window`/`Dialog`, dynamic desktop), 0017 (resize propagation protocol),
-  0015 (scroll chrome protocol), 0009 (`Shell`), 0007 (mouse)
+  0015 (scroll chrome protocol), 0009 (`Shell`), 0007 (mouse), 0020
+  (followable help links)
 
 ## Purpose
 
@@ -79,11 +80,27 @@ with two targets instead of four.
   calls `self.pane.show(&topic)` — which, per `HelpPane`'s own contract,
   resets that pane's scroll to the top-left. Scrolling *within* a topic never
   touches the list, so it never re-triggers this.
+- **Link activation drives the list, in the opposite direction (ADR 0020).**
+  After every event routed into the pane, the interior drains
+  `HelpPane::take_link_activation` — set when the pane's `Enter` follows its
+  current link or a direct click lands on one; `Ctrl+Down`/`Ctrl+Up` only
+  cycle which link is current and never activate one — and, if the target
+  resolves via `HelpContents::topic_index`, mirrors `sync_pane_from_list`'s
+  own shape: `list.select(idx)`, updates `shown`, and calls `pane.show`.
+  Keyboard focus is untouched either way — activation moves the selection and
+  page content, not focus. An unresolvable target (a dangling link, which a
+  content test should already be catching per ADR 0013) is a silent no-op.
 - **Focus.** Two focus targets, cycled by `Tab`/`BackTab` (wrapping): the
   list and the pane. A left-click on either pane's area focuses it first,
   mirroring `FileDialog`'s click-to-focus, before the click is routed in.
   Neither the divider column nor anywhere outside both panes is hit — a
   click there falls to `Ignored` and is not a focus change.
+- **The current topic stays marked regardless of focus.** The list is built
+  with `ListBox::always_show_selection(true)` (ADR 0020 addendum): while the
+  pane holds focus, the current topic still draws — dimmer
+  (`Role::SelectionInactive`) than the list's own focused highlight
+  (`Role::Selection`) — rather than losing its highlight entirely, the way a
+  plain `ListBox` would.
 - **Empty contents.** A `HelpContents` with no topics leaves the list empty
   (`ListBox`'s own empty-list handling: `selected() == None`) and the pane
   blank (`HelpPane`'s own just-constructed empty state) — `HelpWindow::build`
@@ -125,7 +142,12 @@ with two targets instead of four.
   the pane to the newly selected topic; a click on a different list row does
   the same; scrolling *within* the pane (arrows/wheel/`PageDown`) never
   changes the list's selection; `Tab`/`BackTab` cycle list ↔ pane, wrapping;
-  a click on the pane side focuses it without changing the list's selection.
+  a click on the pane side focuses it without changing the list's selection;
+  following a link (`Enter` on the current one, or a direct click) jumps the
+  list selection and page to the target topic while keeping focus in the
+  pane; `Ctrl+Down`/`Ctrl+Up` alone (no `Enter`) only cycles the pane's
+  current link and never touches the list; an unresolvable link target is a
+  no-op (ADR 0020).
 - **Render (snapshot):** the two columns with their divider at a representative
   size; a narrow window that shrinks the list column; an empty-contents
   window (blank list, blank pane, no panic).
@@ -150,8 +172,8 @@ with two targets instead of four.
   Behaviour & invariants) to keep the composite to exactly two child widgets
   and one layout split; revisit only if the list's selection highlight
   proves insufficient feedback for which topic is showing in practice.
-- **Full hypertext (followable `{label|target}` links).** Unaffected by this
-  module either way — `HelpPane` already renders only the label (ADR 0013);
-  `HelpWindow` would gain a way to jump the list selection when a link is
-  activated, once that phase lands, without changing today's layout/focus
-  model.
+- **Full hypertext (followable `{label|target}` links).** Landed (ADR 0020):
+  `HelpPane` tracks and renders links, cycles/activates them, and queues the
+  target; `HelpWindow` drains it via `sync_list_from_pane_link`, exactly the
+  "jump the list selection when a link is activated" this question
+  anticipated — the layout/focus model above is otherwise unchanged.

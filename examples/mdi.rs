@@ -16,7 +16,10 @@
 //! - `F1` (or Help ▸ Contents) opens a resizable two-pane `HelpWindow` (ADR
 //!   0013/0017) — a topic list beside the selected topic's page; drag its
 //!   corner to resize and watch both panes relayout live. Reopening while
-//!   it's already up just raises it instead of stacking a second one.
+//!   it's already up just raises it instead of stacking a second one. The
+//!   Overview topic's link is followable (ADR 0020): `Ctrl+Down`/`Ctrl+Up`
+//!   cycle the page's current link, `Enter` follows it, or just click it —
+//!   either jumps the list and page to the Windows topic.
 //! - `Alt-X` (or File ▸ Exit) quits; the terminal is always restored, even on
 //!   a panic, thanks to the RAII backend (ADR 0001).
 
@@ -57,6 +60,7 @@ const HELP_SOURCE: &str = "\
 This desktop hosts a handful of plain document windows plus a docked
 toolbox. Drag a title bar to move a window, or its bottom-right corner
 (marked \u{25e2}) to resize it. Clicking anywhere on a window raises it.
+See the {Windows|windows} topic for the keyboard shortcuts.
 
 @topic windows Windows
 Window > New Window opens another document, cascaded from the last one.

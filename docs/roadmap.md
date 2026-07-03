@@ -29,11 +29,16 @@ need.
   (`Window` never told a resizable interior its area changed) fixed as its
   own protocol, ADR 0017. `edit` still builds its own modal viewer for now
   (nothing requires it to migrate).
-- **Full hypertext help.** The `{label|target}` link syntax is already reserved
-  in the help markup (ADR 0013); the v1 parser keeps only the label. Making
-  links followable — jumping to another topic — is its own later phase, and
-  would extend `HelpWindow` to move the list selection when a link activates
-  (see that spec's Open Questions).
+- ~~**Full hypertext help.**~~ Landed: `{label|target}` links (ADR 0013) are
+  followable (ADR 0020). `HelpPane` parses a paragraph's spans, word-wraps
+  them tracking each link's on-screen position, and lets `Ctrl+Down`/
+  `Ctrl+Up` cycle a "current link" highlight (`Enter` follows it; a click
+  follows immediately) — dedicated keys chosen specifically to leave
+  `HelpWindow`'s existing `Tab`/`BackTab` list⇄pane contract untouched.
+  Activating a link queues its target, drained by `HelpWindow` the same way
+  it already polls the list's own selection, so the list and page jump to
+  match. See [`docs/specs/help_window.md`](specs/help_window.md) and the
+  `mdi` example's Overview topic.
 - **Context-sensitive help.** `open_help`-style entry points already take a
   starting topic id; wiring real context-sensitivity (F1 opening the topic for
   whatever currently has focus) is application-level — `HelpWindow::build`

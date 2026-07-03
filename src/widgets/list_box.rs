@@ -30,8 +30,14 @@ pub struct ListBox {
     selected: Option<usize>,
     top: usize,
     focused: bool,
+    /// Whether the selected row stays visibly marked even while unfocused
+    /// (dimmer than the focused highlight) rather than reading as an
+    /// ordinary row — opt-in, so existing consumers are unaffected
+    /// (ADR 0020 addendum).
+    always_show_selection: bool,
     style: Style,
     focus_style: Style,
+    inactive_focus_style: Style,
 }
 
 impl ListBox {
@@ -45,9 +51,22 @@ impl ListBox {
             selected,
             top: 0,
             focused: false,
+            always_show_selection: false,
             style: theme.style(Role::Input),
             focus_style: theme.style(Role::Selection),
+            inactive_focus_style: theme.style(Role::SelectionInactive),
         }
+    }
+
+    /// Keeps the selected row visibly marked (dimmer than the focused
+    /// highlight) even while this list isn't focused, instead of the default
+    /// of reading as an ordinary row — for a list whose "what's current
+    /// here?" answer matters to more than just itself, e.g.
+    /// [`HelpWindow`](super::HelpWindow)'s topic list while its page pane
+    /// holds focus (ADR 0020 addendum).
+    pub fn always_show_selection(mut self, yes: bool) -> Self {
+        self.always_show_selection = yes;
+        self
     }
 
     /// The index of the selected item, if any.
@@ -166,8 +185,12 @@ impl View for ListBox {
             if idx >= self.items.len() {
                 break;
             }
-            let row_style = if self.focused && self.selected == Some(idx) {
+            let row_style = if self.selected != Some(idx) {
+                self.style
+            } else if self.focused {
                 self.focus_style
+            } else if self.always_show_selection {
+                self.inactive_focus_style
             } else {
                 self.style
             };
@@ -390,6 +413,52 @@ mod tests {
         let mut empty = ListBox::new(rect(6, 3), vec![], &Theme::default());
         empty.select(2); // no panic, still nothing selected
         assert_eq!(empty.selected(), None);
+    }
+
+    #[test]
+    fn an_unfocused_list_draws_no_highlight_by_default() {
+        let mut lb = list(10, 4, &["a", "b", "c"]);
+        lb.set_focused(false);
+        let text = render(&lb, 10, 4);
+        // No easy way to assert "no highlight" from `to_text()` alone (it
+        // drops style); assert via the same style-inspection approach the
+        // opted-in case below uses.
+        let mut buf = Buffer::new(Size::new(10, 4));
+        let mut canvas = Canvas::new(&mut buf);
+        lb.draw(&mut canvas);
+        let theme = Theme::default();
+        assert_eq!(
+            buf.get(Point::new(0, 0)).unwrap().style(),
+            theme.style(Role::Input),
+            "unfocused, opted-out: the selected row reads as an ordinary row"
+        );
+        let _ = text;
+    }
+
+    #[test]
+    fn always_show_selection_dims_the_current_row_instead_of_hiding_it() {
+        let mut lb = ListBox::new(rect(10, 4), items(&["a", "b", "c"]), &Theme::default())
+            .always_show_selection(true);
+        lb.set_focused(false);
+        let theme = Theme::default();
+        let mut buf = Buffer::new(Size::new(10, 4));
+        let mut canvas = Canvas::new(&mut buf);
+        lb.draw(&mut canvas);
+        assert_eq!(
+            buf.get(Point::new(0, 0)).unwrap().style(),
+            theme.style(Role::SelectionInactive),
+            "unfocused, opted-in: still visibly the current row, just dimmer"
+        );
+
+        lb.set_focused(true);
+        let mut buf2 = Buffer::new(Size::new(10, 4));
+        let mut canvas2 = Canvas::new(&mut buf2);
+        lb.draw(&mut canvas2);
+        assert_eq!(
+            buf2.get(Point::new(0, 0)).unwrap().style(),
+            theme.style(Role::Selection),
+            "focused: the ordinary bright highlight, unchanged"
+        );
     }
 
     #[test]

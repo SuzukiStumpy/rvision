@@ -71,7 +71,9 @@ impl HelpWindow {
     fn new(contents: HelpContents, size: Size, theme: &Theme) -> Self {
         let (list_rect, pane_rect) = split(size);
         let titles: Vec<String> = contents.titles().into_iter().map(str::to_string).collect();
-        let mut list = ListBox::new(list_rect, titles, theme);
+        // Which topic is showing should stay answerable at a glance even
+        // while the page pane holds focus (ADR 0020 addendum).
+        let mut list = ListBox::new(list_rect, titles, theme).always_show_selection(true);
         list.set_focused(true);
         let mut pane = HelpPane::new(pane_rect, theme);
         let shown = contents.home().map(|home| {
@@ -126,6 +128,36 @@ impl HelpWindow {
         result
     }
 
+    /// Routes `event` into the pane, then jumps the list (and thus the page)
+    /// to whatever topic a link activation asked for — the mirror of
+    /// `route_to_list`/`sync_pane_from_list` in the opposite direction
+    /// (ADR 0020).
+    fn route_to_pane(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
+        let result = self.pane.handle_event(event, ctx);
+        self.sync_list_from_pane_link();
+        result
+    }
+
+    /// Jumps the list selection (and re-shows the page) to whatever topic a
+    /// link activation in the pane queued, if any. An unresolvable target —
+    /// a dangling link, which shouldn't happen for well-formed content per
+    /// ADR 0013's "caught by a content test" stance — is a silent no-op.
+    /// Focus is left untouched either way: activating a link moves the
+    /// selection and page content, not keyboard focus.
+    fn sync_list_from_pane_link(&mut self) {
+        let Some(target) = self.pane.take_link_activation() else {
+            return;
+        };
+        let Some(idx) = self.contents.topic_index(&target) else {
+            return;
+        };
+        self.list.select(idx);
+        self.shown = Some(idx);
+        if let Some(topic) = self.contents.topics().get(idx) {
+            self.pane.show(topic);
+        }
+    }
+
     /// Routes a mouse event (already in this interior's own local
     /// coordinates — the owning `Window` translates into it, ADR 0016) to
     /// whichever child pane the pointer landed on, focusing it first on a
@@ -151,7 +183,7 @@ impl HelpWindow {
         });
         match focus {
             Focus::List => self.route_to_list(&local, ctx),
-            Focus::Pane => self.pane.handle_event(&local, ctx),
+            Focus::Pane => self.route_to_pane(&local, ctx),
         }
     }
 }
@@ -214,7 +246,7 @@ impl View for HelpWindow {
                 }
                 _ => match self.focus {
                     Focus::List => self.route_to_list(event, ctx),
-                    Focus::Pane => self.pane.handle_event(event, ctx),
+                    Focus::Pane => self.route_to_pane(event, ctx),
                 },
             },
             _ => EventResult::Ignored,
@@ -247,7 +279,8 @@ mod tests {
 
     const SOURCE: &str = "\
 @topic intro Introduction
-Welcome to the thing. This is the first, home topic.
+Welcome to the thing. This is the first, home topic. See {the Mouse
+topic|mouse} for more.
 
 @topic keys Keyboard
 Arrow keys move around.
@@ -273,6 +306,15 @@ Click things.
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
         b.handle_event(&Event::Key(KeyEvent::new(code, Modifiers::NONE)), &mut ctx)
+    }
+
+    fn ctrl(b: &mut HelpWindow, code: KeyCode) -> EventResult {
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        b.handle_event(
+            &Event::Key(KeyEvent::new(code, Modifiers::CONTROL)),
+            &mut ctx,
+        )
     }
 
     fn click(b: &mut HelpWindow, x: i16, y: i16) -> EventResult {
@@ -308,6 +350,27 @@ Click things.
         let b = browser(50, 10);
         assert_eq!(b.list.selected(), Some(0));
         assert_eq!(b.shown, Some(0));
+    }
+
+    #[test]
+    fn the_list_marks_its_current_topic_even_while_the_pane_holds_focus() {
+        // Usability gap found in manual testing: `ListBox`'s own default is
+        // to hide its highlight while unfocused, which left the topic list
+        // blank the moment focus moved to the page. `HelpWindow` opts its
+        // list into `always_show_selection` (ADR 0020 addendum) so the
+        // current topic stays visible regardless of which pane has focus.
+        let mut b = browser(50, 10);
+        press(&mut b, KeyCode::Tab); // focus the pane
+        assert_eq!(b.focus, Focus::Pane);
+        let theme = Theme::default();
+        let mut buf = Buffer::new(Size::new(50, 10));
+        let mut canvas = Canvas::new(&mut buf);
+        b.draw(&mut canvas);
+        assert_eq!(
+            buf.get(Point::new(0, 0)).unwrap().style(),
+            theme.style(Role::SelectionInactive),
+            "the current topic row still reads as current, just dimmer"
+        );
     }
 
     #[test]
@@ -413,6 +476,71 @@ Click things.
         let before = b.focus;
         assert_eq!(click(&mut b, list_w, 1), EventResult::Ignored);
         assert_eq!(b.focus, before);
+    }
+
+    // --- Link activation (ADR 0020) ---
+
+    #[test]
+    fn following_a_link_in_the_pane_jumps_the_list_and_keeps_focus_there() {
+        let mut b = browser(50, 10);
+        press(&mut b, KeyCode::Tab); // focus the pane
+        assert_eq!(b.focus, Focus::Pane);
+        press(&mut b, KeyCode::Enter); // "intro"'s one link, already current
+        assert_eq!(b.list.selected(), Some(2), "jumped to the Mouse topic");
+        assert_eq!(b.shown, Some(2));
+        assert_eq!(
+            b.focus,
+            Focus::Pane,
+            "activation doesn't move keyboard focus"
+        );
+    }
+
+    #[test]
+    fn clicking_a_link_in_the_pane_jumps_the_list_and_focuses_the_pane() {
+        let src = "@topic a A\n{go|b}\n@topic b B\nThere.";
+        let mut b = HelpWindow::new(
+            HelpContents::parse(src),
+            Size::new(50, 10),
+            &Theme::default(),
+        );
+        let list_w = b.list.bounds().width();
+        // The pane starts right past the divider; its first line is just the
+        // link's own two-character label, so (0, 0) pane-local lands on it.
+        click(&mut b, list_w + 1, 0);
+        assert_eq!(b.list.selected(), Some(1));
+        assert_eq!(b.shown, Some(1));
+        assert_eq!(b.focus, Focus::Pane);
+    }
+
+    #[test]
+    fn an_unresolvable_link_target_is_a_no_op() {
+        let src = "@topic a A\nSee {missing|nowhere}.\n@topic b B\nMore.";
+        let mut b = HelpWindow::new(
+            HelpContents::parse(src),
+            Size::new(50, 10),
+            &Theme::default(),
+        );
+        press(&mut b, KeyCode::Tab); // focus the pane
+        press(&mut b, KeyCode::Enter); // the one link, targeting a topic id that doesn't exist
+        assert_eq!(
+            b.list.selected(),
+            Some(0),
+            "no topic in `contents` resolves the target"
+        );
+        assert_eq!(b.shown, Some(0));
+    }
+
+    #[test]
+    fn ctrl_down_cycles_links_in_the_pane_without_touching_the_list() {
+        let mut b = browser(50, 10);
+        press(&mut b, KeyCode::Tab); // focus the pane
+        ctrl(&mut b, KeyCode::Down); // "intro" has one link: wraps back to itself
+        assert_eq!(
+            b.list.selected(),
+            Some(0),
+            "cycling alone doesn't activate anything"
+        );
+        assert_eq!(b.shown, Some(0));
     }
 
     // --- Resize propagation (ADR 0017) ---

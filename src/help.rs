@@ -27,24 +27,52 @@
 //! ```
 //!
 //! - `#` (first non-space char) → comment, dropped — except inside `<pre>`.
-//! - `@topic <id> <title…>` opens a topic; `id` is the contents key and the
-//!   future cross-link target, `title` the rest of the line.
+//! - `@topic <id> <title…>` opens a topic; `id` is the contents key and a
+//!   link target.
 //! - Blank-line-separated text runs are [`Block::Paragraph`]s; `<pre>`/`</pre>`
 //!   fence a verbatim [`Block::Preformatted`].
-//! - `{label|target}` is an inline link; the v1 parser keeps only `label` as
-//!   plain text (`target`, a topic id, is reserved for the hypertext phase).
+//! - `{label|target}` is an inline link, parsed as a [`Span::Link`]: `label`
+//!   is shown and reflows like any other text, `target` is the topic id a
+//!   [`HelpPane`](crate::widgets::HelpPane) jumps to when the link is
+//!   activated (ADR 0020).
 //! - Topic order is declaration order; the first topic is the home topic.
 
-/// One unit of a topic's body. Grows additively (headings, lists, inline link
-/// spans) as the help system gains features (ADR 0013).
+/// One inline unit of a paragraph's text: plain prose or a followable link
+/// (ADR 0013's `{label|target}` syntax, realized by ADR 0020).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Span {
+    /// Plain prose text.
+    Text(String),
+    /// A `{label|target}` link.
+    Link {
+        /// The shown text; reflows like any other text.
+        label: String,
+        /// The topic id to jump to when the link is activated.
+        target: String,
+    },
+}
+
+/// One unit of a topic's body. Grows additively (headings, lists) as the
+/// help system gains features (ADR 0013).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
-    /// Prose to be reflowed to the page width. Source line breaks have already
-    /// been collapsed to single spaces and links reduced to their label text.
-    Paragraph(String),
+    /// Prose to be reflowed to the page width, as a sequence of text/link
+    /// spans. Source line breaks have already been collapsed to single
+    /// spaces.
+    Paragraph(Vec<Span>),
     /// Verbatim lines, never reflowed — keybinding tables and other aligned
     /// content. Kept byte-for-byte as authored between the `<pre>` fences.
+    /// Never contains links: the parser doesn't scan `<pre>` content for
+    /// `{label|target}` syntax.
     Preformatted(Vec<String>),
+}
+
+impl Block {
+    /// A paragraph of plain text with no links — a convenience for content
+    /// (and tests) that don't need [`Span::Link`].
+    pub fn text(s: &str) -> Block {
+        Block::Paragraph(vec![Span::Text(s.to_string())])
+    }
 }
 
 /// One help topic: a stable id, a display title, and a body of [`Block`]s.
@@ -147,6 +175,12 @@ impl HelpContents {
         self.topics.iter().find(|t| t.id == id)
     }
 
+    /// The index into [`topics`](Self::topics) of the topic with the given
+    /// `id`, if any — how a followed link's target resolves to a position.
+    pub fn topic_index(&self, id: &str) -> Option<usize> {
+        self.topics.iter().position(|t| t.id == id)
+    }
+
     /// The topic titles, in order — the labels for a contents list.
     pub fn titles(&self) -> Vec<&str> {
         self.topics.iter().map(|t| t.title.as_str()).collect()
@@ -172,7 +206,7 @@ fn topic_header(trimmed: &str) -> Option<(&str, &str)> {
     Some((id, title))
 }
 
-/// Joins the accumulated paragraph lines, strips link markup to label text, and
+/// Joins the accumulated paragraph lines, parses link markup into spans, and
 /// pushes a [`Block::Paragraph`] onto the current topic. A no-op if empty.
 fn flush_paragraph(current: &mut Option<HelpTopic>, paragraph: &mut Vec<String>) {
     if paragraph.is_empty() {
@@ -181,7 +215,7 @@ fn flush_paragraph(current: &mut Option<HelpTopic>, paragraph: &mut Vec<String>)
     let joined = paragraph.join(" ");
     paragraph.clear();
     if let Some(t) = current.as_mut() {
-        t.body.push(Block::Paragraph(strip_links(&joined)));
+        t.body.push(Block::Paragraph(parse_spans(&joined)));
     }
 }
 
@@ -194,28 +228,48 @@ fn flush_pre(current: &mut Option<HelpTopic>, pre: &mut Option<Vec<String>>) {
     }
 }
 
-/// Replaces every well-formed `{label|target}` with `label`. A `{` without a
-/// following `|…}` is left literal, so the function is total on any input.
-fn strip_links(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+/// Splits `s` into [`Span`]s, turning every well-formed `{label|target}` run
+/// into a [`Span::Link`] and leaving everything else as [`Span::Text`]. A `{`
+/// without a following `|…}` is left literal, so the function is total on any
+/// input. Adjacent links with no separating text produce no empty `Text` span
+/// between them (`push_span_text` merges/skips as needed).
+fn parse_spans(s: &str) -> Vec<Span> {
+    let mut out = Vec::new();
     let mut rest = s;
     while let Some(open) = rest.find('{') {
-        out.push_str(&rest[..open]);
+        push_span_text(&mut out, &rest[..open]);
         let after = &rest[open + 1..];
         if let Some(bar) = after.find('|') {
             let label = &after[..bar];
             let after_bar = &after[bar + 1..];
             if let Some(close) = after_bar.find('}') {
-                out.push_str(label);
+                out.push(Span::Link {
+                    label: label.to_string(),
+                    target: after_bar[..close].to_string(),
+                });
                 rest = &after_bar[close + 1..];
                 continue;
             }
         }
-        out.push('{'); // not a link: keep the brace literal
+        push_span_text(&mut out, "{"); // not a link: keep the brace literal
         rest = after;
     }
-    out.push_str(rest);
+    push_span_text(&mut out, rest);
     out
+}
+
+/// Appends `s` as a [`Span::Text`], merging into a trailing `Text` span
+/// rather than starting a new one, and skipping empty pushes entirely — so
+/// [`parse_spans`] never emits an empty or needlessly split text span.
+fn push_span_text(out: &mut Vec<Span>, s: &str) {
+    if s.is_empty() {
+        return;
+    }
+    if let Some(Span::Text(prev)) = out.last_mut() {
+        prev.push_str(s);
+    } else {
+        out.push(Span::Text(s.to_string()));
+    }
 }
 
 #[cfg(test)]
@@ -223,10 +277,19 @@ mod tests {
     use super::*;
 
     fn para(s: &str) -> Block {
-        Block::Paragraph(s.to_string())
+        Block::text(s)
     }
     fn pre(lines: &[&str]) -> Block {
         Block::Preformatted(lines.iter().map(|s| s.to_string()).collect())
+    }
+    fn text(s: &str) -> Span {
+        Span::Text(s.to_string())
+    }
+    fn link(label: &str, target: &str) -> Span {
+        Span::Link {
+            label: label.to_string(),
+            target: target.to_string(),
+        }
     }
 
     #[test]
@@ -246,6 +309,8 @@ mod tests {
         assert_eq!(c.home().unwrap().id, "a");
         assert_eq!(c.topic("b").unwrap().title, "Beta");
         assert!(c.topic("missing").is_none());
+        assert_eq!(c.topic_index("b"), Some(1));
+        assert!(c.topic_index("missing").is_none());
     }
 
     #[test]
@@ -278,9 +343,43 @@ mod tests {
     }
 
     #[test]
-    fn links_reduce_to_their_label_text() {
+    fn links_keep_both_label_and_target_as_separate_spans() {
         let c = HelpContents::parse("@topic t  T\nSee {the keys|keyboard} and {paste|clipboard}.");
-        assert_eq!(c.topics()[0].body, vec![para("See the keys and paste.")]);
+        assert_eq!(
+            c.topics()[0].body,
+            vec![Block::Paragraph(vec![
+                text("See "),
+                link("the keys", "keyboard"),
+                text(" and "),
+                link("paste", "clipboard"),
+                text("."),
+            ])]
+        );
+    }
+
+    #[test]
+    fn a_link_directly_abutting_punctuation_keeps_the_punctuation_a_separate_span() {
+        // No space between the link and the following ".": the punctuation
+        // must land in its own Text span, not get merged into the link's
+        // label (ADR 0020 — this is the shape that broke a naive per-span
+        // word-wrap tokenizer during design).
+        let c = HelpContents::parse("@topic t  T\n{paste|clipboard}.");
+        assert_eq!(
+            c.topics()[0].body,
+            vec![Block::Paragraph(vec![
+                link("paste", "clipboard"),
+                text(".")
+            ])]
+        );
+    }
+
+    #[test]
+    fn adjacent_links_with_no_separator_produce_no_empty_span_between() {
+        let c = HelpContents::parse("@topic t  T\n{a|x}{b|y}");
+        assert_eq!(
+            c.topics()[0].body,
+            vec![Block::Paragraph(vec![link("a", "x"), link("b", "y")])]
+        );
     }
 
     #[test]

@@ -1,11 +1,10 @@
 ---
 source: src/widgets/help_window.rs
-assertion_line: 473
 expression: buf.to_text()
 ---
-Int│Welcome to
-Key│the thing.
-Mou│This is   
-   │the first,
-   │home      
-   │topic.
+Int│Welcome  ▲
+Key│to the   █
+Mou│thing.   ▒
+   │This is  ▒
+   │the      ▒
+   │first,   ▼

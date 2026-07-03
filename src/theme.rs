@@ -50,11 +50,23 @@ pub enum Role {
     Input,
     /// The drop shadow cast by a window or dialog over what lies behind it.
     Shadow,
+    /// A followable `{label|target}` link at rest in a
+    /// [`HelpPane`](crate::widgets::HelpPane) (ADR 0020). The *current,
+    /// keyboard-focused* link reuses [`Role::Selection`] instead, mirroring
+    /// how [`ListBox`](crate::widgets::ListBox) highlights its selected row.
+    HelpLink,
+    /// A `ListBox`'s selected row when the list itself isn't focused, for a
+    /// list opted into always showing its current item (ADR 0020 addendum —
+    /// e.g. `HelpWindow`'s topic list, so "what topic is this?" stays
+    /// answerable while the page pane holds focus). A dimmer relative of
+    /// [`Role::Selection`], mirroring [`Role::WindowTitleInactive`]'s
+    /// receded-but-still-legible relationship to [`Role::WindowTitle`].
+    SelectionInactive,
 }
 
 impl Role {
     /// Every role, in discriminant order (so `ALL[i] as usize == i`).
-    pub const ALL: [Role; 17] = [
+    pub const ALL: [Role; 19] = [
         Role::DesktopBackground,
         Role::WindowFrame,
         Role::WindowTitle,
@@ -72,6 +84,8 @@ impl Role {
         Role::DialogBackground,
         Role::Input,
         Role::Shadow,
+        Role::HelpLink,
+        Role::SelectionInactive,
     ];
 
     /// The number of roles.
@@ -127,6 +141,13 @@ impl Default for Theme {
         // The classic TurboVision shadow: whatever shows through is repainted
         // dark-gray on black, so it reads as "in shadow" without hiding the glyph.
         styles[Role::Shadow as usize] = cga(Color16::DarkGray, Color16::Black);
+        // Classic hyperlink blue, distinct from the dialog's black-on-light-gray
+        // prose and from the red used for hotkeys/status shortcuts.
+        styles[Role::HelpLink as usize] = cga(Color16::Blue, Color16::LightGray);
+        // A muted echo of Selection's black-on-cyan — visible enough to
+        // answer "what's current here?" without competing with the actual
+        // focus highlight elsewhere on screen.
+        styles[Role::SelectionInactive as usize] = cga(Color16::Black, Color16::DarkGray);
         Self { styles }
     }
 }
@@ -165,6 +186,15 @@ mod tests {
         assert_eq!(
             t.style(Role::Shadow),
             cga(Color16::DarkGray, Color16::Black)
+        );
+        // ADR 0020 followable help links.
+        assert_eq!(
+            t.style(Role::HelpLink),
+            cga(Color16::Blue, Color16::LightGray)
+        );
+        assert_eq!(
+            t.style(Role::SelectionInactive),
+            cga(Color16::Black, Color16::DarkGray)
         );
         // Phase 10 active/inactive window titles: active is bright + bold, inactive
         // recedes to the dimmer frame grey.

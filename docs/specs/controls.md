@@ -2,7 +2,7 @@
 
 - **Status:** Done; `ListBox`'s scroll bar in progress (Draft) per ADR 0015
 - **Phase:** 5 (Dialogs & controls); scroll-protocol migration post-extraction
-- **Related ADRs:** 0003 (commands up / broadcasts down), 0004 (three-phase dispatch), 0005 (colour roles), 0008 (owner-relative coords + `Canvas`), 0010 (modal dialogs + focus-aware drawing), 0015 (scroll chrome per-view protocol), 0017 (resize propagation per-view protocol)
+- **Related ADRs:** 0003 (commands up / broadcasts down), 0004 (three-phase dispatch), 0005 (colour roles), 0008 (owner-relative coords + `Canvas`), 0010 (modal dialogs + focus-aware drawing), 0015 (scroll chrome per-view protocol), 0017 (resize propagation per-view protocol), 0020 addendum (`ListBox::always_show_selection`)
 
 ## Purpose
 
@@ -112,7 +112,11 @@ impl View for ListBox {
   `(•)`/`( )` per option; exactly one selected.
 - **ListBox.** Focusable; `Up`/`Down` move the selection by one, `PgUp`/`PgDn` by a
   page, `Home`/`End` to the ends; `top` scrolls so the selection is always visible;
-  the selected row draws in `Selection`. An empty list has `selected() == None`.
+  the selected row draws in `Selection` **only while focused** — unless built
+  with `.always_show_selection(true)` (ADR 0020 addendum, e.g.
+  `HelpWindow`'s topic list), in which case an unfocused selection still
+  draws, in the dimmer `SelectionInactive` instead. An empty list has
+  `selected() == None`.
   **Scroll chrome (ADR 0015):** `ListBox` no longer builds, draws, or
   hit-tests its own `ScrollBar` — it reports `scroll_metrics()` as
   `Some(ScrollMetrics { vertical: Some(AxisMetrics { total: items.len(),
