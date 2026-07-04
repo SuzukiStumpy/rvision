@@ -4,7 +4,7 @@
   `Desktop`, and `MenuBar`/`Menu`/`MenuItem` themselves moved out to their own
   specs — see below
 - **Phase:** 4 (Application chrome) — kept current through Phases 5–6
-- **Related ADRs:** 0003 (retained tree, commands up / broadcasts down), 0004 (three-phase dispatch), 0005 (colour roles), 0008 (owner-relative coords + `Canvas`), 0009 (application shell + menu overlay)
+- **Related ADRs:** 0003 (retained tree, commands up / broadcasts down), 0004 (three-phase dispatch), 0005 (colour roles), 0008 (owner-relative coords + `Canvas`), 0009 (application shell + menu overlay), 0028 (`StatusLine` unified with the global accelerator table)
 
 ## Purpose
 
@@ -63,17 +63,21 @@ impl Frame {
 // (moved out of this file — ADR 0016 made them a dynamic MDI container
 // absorbing the old Dialog, too large to stay chrome-file furniture)
 
-// --- StatusLine: global hot-key items (carved to a region by the shell) ---
-pub struct StatusItem { hint: String, label: String, key: KeyEvent, command: Command }
+// --- StatusLine: hot-key hints (carved to a region by the shell) ---
+// Purely a display widget (ADR 0028) — the Accelerator each item carries is
+// harvested by Shell::new into Desktop's global accelerator table, which is
+// what actually fires it; see command.md / desktop.md.
+pub struct StatusItem { hint: String, label: String, accelerator: Accelerator }
 impl StatusItem {
-    pub fn new(hint: &str, label: &str, key: KeyEvent, command: Command) -> Self;
+    pub fn new(hint: &str, label: &str, accelerator: Accelerator) -> Self;
 }
 pub struct StatusLine { bounds: Rect, items: Vec<StatusItem>, style: Style, key_style: Style }
 impl StatusLine {
     pub fn new(bounds: Rect, items: Vec<StatusItem>, style: Style, key_style: Style) -> Self;
     pub fn set_bounds(&mut self, bounds: Rect);
+    // pub(crate) fn accelerators(&self) -> impl Iterator<Item = Accelerator> + '_;
 }
-impl View for StatusLine { /* a matching KeyEvent posts its (enabled) command */ }
+impl View for StatusLine { /* draw only — no handle_event override */ }
 
 // --- MenuBar, Menu, MenuItem: see menu.md ---
 // (moved out of this file once cascading submenus grew the state machine and
@@ -99,9 +103,11 @@ impl View for StatusLine { /* a matching KeyEvent posts its (enabled) command */
   (see [`window.md`](window.md)). Degrades without panic for tiny rects.
 - **Window, MessageBox, FileDialog, Desktop.** Specced separately — see
   [`window.md`](window.md) and [`desktop.md`](desktop.md).
-- **StatusLine.** A `Key` whose code equals an item's `key` posts that item's
-  command (enabled-gated by `Context`, ADR 0003) and is consumed; other events are
-  ignored. Drawn left→right, each item's key glyph in `key_style`.
+- **StatusLine.** A pure display widget (ADR 0028): drawn left→right, each
+  item's key glyph in `key_style`. It no longer intercepts keys itself —
+  each item's `Accelerator` is harvested into `Desktop`'s global accelerator
+  table by `Shell::new`, which is what actually posts the (enabled-gated)
+  command; see [`desktop.md`](desktop.md).
 - **MenuBar / Menu.** Specced separately — see [`menu.md`](menu.md).
 
 ## Collaborators

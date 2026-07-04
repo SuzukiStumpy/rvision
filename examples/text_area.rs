@@ -26,7 +26,7 @@ use std::time::Duration;
 use rvision::app::{Application, Root, Shell};
 use rvision::backend::Backend;
 use rvision::cell::Cell;
-use rvision::command::CM_QUIT;
+use rvision::command::{Accelerator, CM_QUIT};
 use rvision::crossterm_backend::CrosstermBackend;
 use rvision::event::{KeyCode, KeyEvent, Modifiers};
 use rvision::geometry::{Point, Rect, Size};
@@ -101,8 +101,7 @@ fn main() -> io::Result<()> {
         vec![StatusItem::new(
             "Alt-X",
             "Exit",
-            KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT),
-            CM_QUIT,
+            Accelerator::new(KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT), CM_QUIT),
         )],
         theme.style(Role::StatusBar),
         theme.style(Role::StatusKey),

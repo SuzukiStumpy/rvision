@@ -24,7 +24,7 @@ use rvision::backend::Backend;
 use rvision::canvas::Canvas;
 use rvision::cell::Cell;
 use rvision::color::Style;
-use rvision::command::{CM_QUIT, CM_USER, Command};
+use rvision::command::{Accelerator, CM_QUIT, CM_USER, Command};
 use rvision::crossterm_backend::CrosstermBackend;
 use rvision::event::{Event, EventResult, KeyCode, KeyEvent, Modifiers, MouseButton, MouseKind};
 use rvision::geometry::{Point, Rect, Size};
@@ -179,20 +179,17 @@ fn main() -> io::Result<()> {
             StatusItem::new(
                 "F1",
                 "Help",
-                KeyEvent::new(KeyCode::F(1), Modifiers::NONE),
-                CM_FIND,
+                Accelerator::new(KeyEvent::new(KeyCode::F(1), Modifiers::NONE), CM_FIND),
             ),
             StatusItem::new(
                 "Alt-X",
                 "Exit",
-                KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT),
-                CM_QUIT,
+                Accelerator::new(KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT), CM_QUIT),
             ),
             StatusItem::new(
                 "F10",
                 "Menu",
-                KeyEvent::new(KeyCode::F(10), Modifiers::NONE),
-                CM_NEW,
+                Accelerator::new(KeyEvent::new(KeyCode::F(10), Modifiers::NONE), CM_NEW),
             ),
         ],
         theme.style(Role::StatusBar),

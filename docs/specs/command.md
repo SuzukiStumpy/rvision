@@ -2,18 +2,25 @@
 
 - **Status:** Done
 - **Phase:** 3 (View system)
-- **Related ADRs:** 0003 (commands bubble up the owner chain), 0004 (`Event::Command`)
+- **Related ADRs:** 0003 (commands bubble up the owner chain), 0004
+  (`Event::Command`), 0028 (`Accelerator`/`Accelerators`, global keyboard
+  shortcuts)
 
 ## Purpose
 
-The vocabulary of UI **commands** and which of them are currently **enabled**. A
-[`Command`] is the integer id of an action (TurboVision's `cmXxx`); a
-[`CommandSet`] tracks the enabled/disabled state so a control can grey itself and
-a disabled command never fires.
+The vocabulary of UI **commands**, which of them are currently **enabled**,
+and which keys fire them. A [`Command`] is the integer id of an action
+(TurboVision's `cmXxx`); a [`CommandSet`] tracks the enabled/disabled state
+so a control can grey itself and a disabled command never fires; an
+[`Accelerator`] pairs a key with the command it should fire, and
+[`Accelerators`] is the table `Desktop` resolves an unclaimed key against
+(ADR 0028).
 
 It is **not** the dispatcher: routing a command up the owner chain is the
-`view::Group`'s job (ADR 0003). This module is pure data — no views, no events
-beyond re-exporting the `Command` id type that `event` already defines.
+`view::Group`'s job (ADR 0003), and resolving a key against the accelerator
+table is `widgets::Desktop`'s (ADR 0028). This module is pure data — no
+views, no events beyond re-exporting the `Command`/`KeyEvent` types `event`
+already defines.
 
 ## Public interface
 
@@ -37,6 +44,20 @@ impl CommandSet {
     pub fn disable(&mut self, command: Command);
     pub fn is_enabled(&self, command: Command) -> bool;
 }
+
+/// One keyboard shortcut: `key` fires `command` (ADR 0028).
+pub struct Accelerator { /* key: KeyEvent, command: Command */ }
+impl Accelerator {
+    pub fn new(key: KeyEvent, command: Command) -> Self;
+}
+
+// pub(crate): Desktop's own resolver, not part of the public surface.
+struct Accelerators { /* bindings: Vec<Accelerator> */ }
+impl Accelerators {
+    fn new() -> Self;
+    fn bind(&mut self, accelerator: Accelerator);
+    fn resolve(&self, key: &KeyEvent) -> Option<Command>; // first bound match wins
+}
 ```
 
 ## Behaviour & invariants
@@ -52,6 +73,12 @@ impl CommandSet {
 - `enable`/`disable` are idempotent; enabling a never-disabled command is a no-op.
 - `is_enabled` is the single query everything else builds on (a control's draw, a
   `Context`'s decision whether to post a command).
+- **`Accelerators::resolve` does no gating of its own** (ADR 0028) — it's a
+  pure lookup; `Desktop` posts the resolved command through `Context::post`,
+  which already checks `CommandSet`, so a disabled command's key still
+  consumes the keystroke but posts nothing. Binding the same key twice is
+  not an error: the first bound entry wins, silently — a collision is a
+  programming mistake, not a runtime condition worth detecting.
 
 ## Collaborators
 
@@ -65,6 +92,9 @@ impl CommandSet {
 - **Logic:** new set enables an arbitrary id; `disable` then `is_enabled` is false;
   `enable` re-enables; idempotent repeats; two ids are independent.
 - **Constants:** the standard ids are distinct and non-zero.
+- **`Accelerators`:** an empty table resolves nothing; a bound key resolves to
+  its command; an unbound key resolves to `None`; binding the same key twice
+  resolves to the first one bound.
 
 ## Open questions
 

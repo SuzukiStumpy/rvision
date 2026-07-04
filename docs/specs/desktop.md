@@ -3,7 +3,9 @@
 - **Status:** Draft
 - **Phase:** post-extraction rework (SDI/MDI convergence)
 - **Related ADRs:** 0016 (unify `Window`/`Dialog`, dynamic desktop), 0007
-  (mouse), 0009 (`Shell`), 0003/0004 (tree + dispatch)
+  (mouse), 0009 (`Shell`), 0003/0004 (tree + dispatch), 0027 (generic mouse
+  capture for continuous drag interactions), 0028 (global keyboard
+  accelerator table)
 
 ## Purpose
 
@@ -27,11 +29,19 @@ never touches `Desktop` at all (see [`window.md`](window.md), [`app.md`](app.md)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WindowId(u64);
 
-pub struct Desktop { bounds: Rect, backdrop: Cell, /* windows + active + drag session, see below */ }
+pub struct Desktop { bounds: Rect, backdrop: Cell, /* windows + active + drag/capture session + accelerators, see below */ }
 
 impl Desktop {
     /// An empty desktop occupying `bounds`, filled with `backdrop`.
     pub fn new(bounds: Rect, backdrop: Cell) -> Self;
+
+    /// Registers a global keyboard shortcut (ADR 0028): pressing
+    /// `accelerator`'s key, whenever nothing more specific already claims
+    /// it, posts its command. Works with no window open, and needs no
+    /// `StatusLine` at all — `Shell::new` feeds one in per `StatusItem`
+    /// automatically, but this is also the way to bind one with no
+    /// status-bar slot.
+    pub fn bind_accelerator(&mut self, accelerator: Accelerator);
 
     /// Adds `window` to the stack, raised to the top and made active.
     pub fn open(&mut self, window: Window) -> WindowId;
@@ -121,6 +131,27 @@ post any of the four directly — `Desktop` is what gives them effect.
   - No session is active for more than one window at a time; a session in
     progress makes `Desktop` ignore new `Down` events until it ends (matches
     single-pointer terminal input; no multi-touch to arbitrate).
+- **Mouse capture (ADR 0027).** A view anywhere in a window's tree can ask
+  (via `Context::request_mouse_capture`) to keep receiving every subsequent
+  mouse event straight through to its own window — regardless of where the
+  pointer moves — until the button is released. `Desktop` tracks this as
+  `captured: Option<WindowId>`, orthogonal to the `Move`/`Resize` drag
+  session above: capture is checked first in `handle_mouse` (bypassing
+  ordinary positional dispatch entirely while active) and cleared on `Up`,
+  once the event has been forwarded. `Desktop` never learns *why* something
+  wanted capture (a scroll-bar thumb drag is the only caller today) — purely
+  a generic "keep forwarding" primitive, the same shape as the context-menu
+  anchor request (ADR 0019).
+- **Global keyboard accelerators (ADR 0028).** `Desktop` owns an
+  `Accelerators` table (`command.rs`), populated via `bind_accelerator` —
+  directly, or automatically per `StatusItem` when `Shell::new` harvests
+  `StatusLine::accelerators()`. `handle_event`'s `Event::Key` arm tries the
+  active window's own dispatch first, unchanged; only on `Ignored` does it
+  resolve the key against the table and `ctx.post` the bound command
+  (already gated by `CommandSet`, so a disabled command's key still
+  consumes but posts nothing). Works with no active window. `Event::Paste`
+  carries no `KeyEvent` and only ever reaches the active window, never the
+  table.
 - **`valid` fans out to every window, not just the active one** (ADR 0016,
   mirroring TV's `TGroup::valid`). Like `Group`'s own fan-out (`view.md`),
   every window is asked — not a short-circuiting `all()` — so several
@@ -142,8 +173,8 @@ post any of the four directly — `Desktop` is what gives them effect.
 
 - [`Window`](window.md) (owned by value; `set_bounds`/`hide`/`show`/`toggle_zoom`/
   `valid` are what `Desktop` drives).
-- `view::{View, Context}`, `command::{Command, CM_CLOSE, CM_ZOOM, CM_NEXT, CM_PREV}`,
-  `event::{Event, MouseEvent, MouseKind}`.
+- `view::{View, Context}`, `command::{Command, CM_CLOSE, CM_ZOOM, CM_NEXT, CM_PREV,
+  Accelerator, Accelerators}`, `event::{Event, MouseEvent, MouseKind}`.
 - `app::Root` (asks `valid(CM_QUIT, ctx)` before honouring a posted quit —
   see [`app.md`](app.md)); `app::Shell` (owns a `Desktop`, needs a
   `desktop_mut()` accessor so application code can call `open` — see
@@ -166,7 +197,13 @@ post any of the four directly — `Desktop` is what gives them effect.
   corner drag resizes a `resizable` window; `CM_CLOSE`/`CM_ZOOM`/`CM_NEXT`/
   `CM_PREV` each act on the active window and respect its `closable`/
   `zoomable` flags; `CM_QUIT` reaching `Desktop::valid` polls every window,
-  not just the active one, and a single refusal anywhere vetoes it.
+  not just the active one, and a single refusal anywhere vetoes it; a thumb
+  drag keeps scrolling even once the pointer strays outside the window's own
+  bounds, ending only on `Up` (ADR 0027); an unclaimed key resolves a bound
+  accelerator and posts its command, the active window's own handling always
+  wins over one bound to the same key, an accelerator fires with no active
+  window, and an unbound key with no active claim still bubbles `Ignored`
+  (ADR 0028).
 - **End-to-end (through `Application`):** opening a window via `desktop_mut().open(...)`
   from application code between `run` turns shows it on the next draw;
   `exec_view` run over a `Shell` with open desktop windows leaves them

@@ -1,35 +1,38 @@
-//! The status line: a bottom row of global hot-key items (TurboVision's
+//! The status line: a bottom row of hot-key hints (TurboVision's
 //! `TStatusLine`).
 //!
 //! Each [`StatusItem`] pairs a shown hint (`F1`, `Alt-X`) and label (`Help`,
-//! `Exit`) with the key that fires it and the command it posts. The status line is
-//! a *post-process* handler in the shell (ADR 0009): it gets a key only after the
-//! focused view has declined it, so its hot-keys never shadow typing in a window.
+//! `Exit`) with the [`Accelerator`] that actually fires it — pairing them at
+//! construction makes a shown hint structurally incapable of lacking a real
+//! binding behind it. `StatusLine` itself is a pure display widget: it draws
+//! the hints and nothing more. The binding + firing lives on
+//! [`Desktop`](super::Desktop)'s global accelerator table instead
+//! (ADR 0028) — `Shell::new` feeds every item's `Accelerator` into it, so
+//! building a `StatusLine`, as before, is enough to get a working shortcut,
+//! but a shortcut no longer *needs* a status-line slot to work at all.
 
 use crate::canvas::Canvas;
 use crate::color::Style;
-use crate::command::Command;
-use crate::event::{Event, EventResult, KeyEvent};
+use crate::command::Accelerator;
 use crate::geometry::{Point, Rect};
-use crate::view::{Context, View};
+use crate::view::View;
 
-/// One labelled hot-key on the status line.
+/// One labelled hot-key hint on the status line.
 pub struct StatusItem {
     hint: String,
     label: String,
-    key: KeyEvent,
-    command: Command,
+    accelerator: Accelerator,
 }
 
 impl StatusItem {
-    /// Creates an item shown as `hint` + `label` (e.g. `"F1"`, `"Help"`), fired by
-    /// `key`, posting `command`.
-    pub fn new(hint: &str, label: &str, key: KeyEvent, command: Command) -> Self {
+    /// Creates an item shown as `hint` + `label` (e.g. `"F1"`, `"Help"`),
+    /// backed by `accelerator` — the key that actually fires it, registered
+    /// separately into `Desktop`'s table (ADR 0028).
+    pub fn new(hint: &str, label: &str, accelerator: Accelerator) -> Self {
         Self {
             hint: hint.to_string(),
             label: label.to_string(),
-            key,
-            command,
+            accelerator,
         }
     }
 }
@@ -58,6 +61,12 @@ impl StatusLine {
     pub fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = bounds;
     }
+
+    /// Every item's binding, in order — `Shell::new` feeds these into
+    /// `Desktop`'s global accelerator table (ADR 0028) at construction.
+    pub(crate) fn accelerators(&self) -> impl Iterator<Item = Accelerator> + '_ {
+        self.items.iter().map(|item| item.accelerator)
+    }
 }
 
 impl View for StatusLine {
@@ -78,27 +87,16 @@ impl View for StatusLine {
             x += 2;
         }
     }
-
-    fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
-        if let Event::Key(key) = event {
-            for item in &self.items {
-                if item.key == *key {
-                    ctx.post(item.command);
-                    return EventResult::Consumed;
-                }
-            }
-        }
-        EventResult::Ignored
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::buffer::Buffer;
-    use crate::command::{CM_QUIT, CommandSet};
-    use crate::event::{KeyCode, Modifiers};
+    use crate::command::{CM_QUIT, Command, CommandSet};
+    use crate::event::{Event, EventResult, KeyCode, KeyEvent, Modifiers};
     use crate::geometry::Size;
+    use crate::view::Context;
 
     fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
         Rect::from_origin_size(Point::new(x, y), Size::new(w, h))
@@ -113,14 +111,12 @@ mod tests {
                 StatusItem::new(
                     "F1",
                     "Help",
-                    KeyEvent::new(KeyCode::F(1), Modifiers::NONE),
-                    CM_HELP,
+                    Accelerator::new(KeyEvent::new(KeyCode::F(1), Modifiers::NONE), CM_HELP),
                 ),
                 StatusItem::new(
                     "Alt-X",
                     "Exit",
-                    KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT),
-                    CM_QUIT,
+                    Accelerator::new(KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT), CM_QUIT),
                 ),
             ],
             Style::new(),
@@ -138,26 +134,14 @@ mod tests {
     }
 
     #[test]
-    fn a_matching_key_posts_its_command() {
+    fn status_line_no_longer_intercepts_keys_itself() {
+        // Binding + firing moved to Desktop's global accelerator table (ADR
+        // 0028); StatusLine is now purely a display widget.
         let mut sl = line(rect(0, 0, 30, 1));
         let cs = CommandSet::new();
         let mut ctx = Context::new(&cs);
         let r = sl.handle_event(
             &Event::Key(KeyEvent::new(KeyCode::F(1), Modifiers::NONE)),
-            &mut ctx,
-        );
-        assert_eq!(r, EventResult::Consumed);
-        assert_eq!(ctx.posted(), &[Event::Command(CM_HELP)]);
-    }
-
-    #[test]
-    fn a_modifier_must_match_too() {
-        // Plain 'x' (no Alt) is not the Alt-X item; nothing fires.
-        let mut sl = line(rect(0, 0, 30, 1));
-        let cs = CommandSet::new();
-        let mut ctx = Context::new(&cs);
-        let r = sl.handle_event(
-            &Event::Key(KeyEvent::new(KeyCode::Char('x'), Modifiers::NONE)),
             &mut ctx,
         );
         assert_eq!(r, EventResult::Ignored);
@@ -165,16 +149,10 @@ mod tests {
     }
 
     #[test]
-    fn a_disabled_items_command_is_not_posted() {
-        let mut sl = line(rect(0, 0, 30, 1));
-        let mut cs = CommandSet::new();
-        cs.disable(CM_HELP);
-        let mut ctx = Context::new(&cs);
-        // The key still "matches and consumes", but the gated post drops it.
-        sl.handle_event(
-            &Event::Key(KeyEvent::new(KeyCode::F(1), Modifiers::NONE)),
-            &mut ctx,
-        );
-        assert!(ctx.posted().is_empty());
+    fn accelerators_yields_every_items_binding_in_order() {
+        let sl = line(rect(0, 0, 30, 1));
+        let f1 = Accelerator::new(KeyEvent::new(KeyCode::F(1), Modifiers::NONE), CM_HELP);
+        let alt_x = Accelerator::new(KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT), CM_QUIT);
+        assert_eq!(sl.accelerators().collect::<Vec<_>>(), vec![f1, alt_x]);
     }
 }

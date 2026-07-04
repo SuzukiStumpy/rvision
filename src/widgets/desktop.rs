@@ -17,7 +17,7 @@
 
 use crate::canvas::Canvas;
 use crate::cell::Cell;
-use crate::command::{CM_CLOSE, CM_NEXT, CM_PREV, CM_ZOOM, Command};
+use crate::command::{Accelerator, Accelerators, CM_CLOSE, CM_NEXT, CM_PREV, CM_ZOOM, Command};
 use crate::event::{Event, EventResult, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect, Size};
 use crate::view::{Context, View};
@@ -77,6 +77,11 @@ pub struct Desktop {
     /// (ADR 0016) where `Desktop` computes the new bounds itself; this is
     /// the opposite — `Desktop` computes nothing, just keeps forwarding.
     captured: Option<WindowId>,
+    /// The system-level global keyboard shortcut table (ADR 0028): checked
+    /// as a fallback whenever the active window's own key handling declines
+    /// a key, independent of whether anything displays a hint for it (unlike
+    /// the app-specific `StatusLine` hint it replaces).
+    accelerators: Accelerators,
 }
 
 impl Desktop {
@@ -90,7 +95,19 @@ impl Desktop {
             next_id: 0,
             drag: None,
             captured: None,
+            accelerators: Accelerators::new(),
         }
+    }
+
+    /// Registers a global keyboard shortcut (ADR 0028): pressing
+    /// `accelerator`'s key, whenever nothing more specific already claims it
+    /// (the active window's own handling always gets first refusal), posts
+    /// its command. Works with no window open at all, and needs no visible
+    /// status-line hint — `Shell::new` feeds one in per `StatusItem`
+    /// automatically, but this is also how an app binds one with no status
+    /// bar slot at all (`shell.desktop_mut().bind_accelerator(...)`).
+    pub fn bind_accelerator(&mut self, accelerator: Accelerator) {
+        self.accelerators.bind(accelerator);
     }
 
     /// Adds `window` to the stack, raised to the top and made active.
@@ -342,6 +359,19 @@ impl Desktop {
         })
     }
 
+    /// Forwards a `Key`/`Paste` event straight to the active window, if any
+    /// (ADR 0009's "focused" pass) — the shared tail `handle_event` builds
+    /// its `Key` fallback to the accelerator table (ADR 0028) on top of.
+    fn dispatch_to_active(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
+        match self.active {
+            Some(id) => match self.window_mut(id) {
+                Some(window) => window.handle_event(event, ctx),
+                None => EventResult::Ignored,
+            },
+            None => EventResult::Ignored,
+        }
+    }
+
     /// Positional dispatch, click-to-front, and drag/resize/capture session
     /// handling for a mouse event (ADR 0016, ADR 0027).
     fn handle_mouse(&mut self, mouse: MouseEvent, ctx: &mut Context) -> EventResult {
@@ -468,15 +498,23 @@ impl View for Desktop {
         match event {
             Event::Mouse(mouse) => self.handle_mouse(*mouse, ctx),
             Event::Command(command) => self.handle_command(*command, ctx),
-            // Focused: only the active window. Its ignored result bubbles up so the
-            // shell can try the status line next (ADR 0009). Paste rides along.
-            Event::Key(_) | Event::Paste(_) => match self.active {
-                Some(id) => match self.window_mut(id) {
-                    Some(window) => window.handle_event(event, ctx),
+            // A key the active window declines falls back to the global
+            // accelerator table (ADR 0028) before bubbling out any further —
+            // the active window's own handling always gets first refusal, so
+            // an accelerator never hijacks a keystroke a control already
+            // means something by.
+            Event::Key(key) => self.dispatch_to_active(event, ctx).or_else(|| {
+                match self.accelerators.resolve(key) {
+                    Some(command) => {
+                        ctx.post(command);
+                        EventResult::Consumed
+                    }
                     None => EventResult::Ignored,
-                },
-                None => EventResult::Ignored,
-            },
+                }
+            }),
+            // Paste carries no KeyEvent, so it can't resolve against the
+            // accelerator table — just the active window, as before.
+            Event::Paste(_) => self.dispatch_to_active(event, ctx),
             // Broadcast / resize / idle: every window, hidden or not, so a
             // hidden window's state stays current for when it's shown again.
             Event::Broadcast(_) | Event::Resize(_) | Event::Idle => {
@@ -630,6 +668,104 @@ mod tests {
             &mut ctx,
         );
         assert_eq!(ctx.posted(), &[Event::Command(CM_OK)]);
+    }
+
+    // --- Global accelerator table (ADR 0028) ---
+
+    #[test]
+    fn an_unclaimed_key_resolves_a_bound_accelerator_and_posts_its_command() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        desk.open(recorder_window(1, rect(0, 0, 10, 5), &log));
+        desk.bind_accelerator(Accelerator::new(
+            KeyEvent::new(KeyCode::Char('o'), Modifiers::CONTROL),
+            CM_HELP,
+        ));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let result = desk.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('o'), Modifiers::CONTROL)),
+            &mut ctx,
+        );
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(ctx.posted(), &[Event::Command(CM_HELP)]);
+    }
+
+    #[test]
+    fn the_active_windows_own_key_handling_wins_over_a_bound_accelerator() {
+        // Recorder claims Enter itself (posting CM_OK); an accelerator also
+        // bound to Enter must never get a look-in.
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        desk.open(recorder_window(1, rect(0, 0, 10, 5), &log));
+        desk.bind_accelerator(Accelerator::new(
+            KeyEvent::new(KeyCode::Enter, Modifiers::NONE),
+            CM_HELP,
+        ));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        desk.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Enter, Modifiers::NONE)),
+            &mut ctx,
+        );
+        assert_eq!(
+            ctx.posted(),
+            &[Event::Command(CM_OK)],
+            "the window's own claim wins; the accelerator never fires"
+        );
+    }
+
+    #[test]
+    fn an_accelerator_fires_even_with_no_active_window() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        desk.bind_accelerator(Accelerator::new(
+            KeyEvent::new(KeyCode::Char('o'), Modifiers::CONTROL),
+            CM_HELP,
+        ));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let result = desk.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('o'), Modifiers::CONTROL)),
+            &mut ctx,
+        );
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(ctx.posted(), &[Event::Command(CM_HELP)]);
+    }
+
+    #[test]
+    fn an_unbound_key_with_no_active_claim_bubbles_ignored() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        desk.open(recorder_window(1, rect(0, 0, 10, 5), &log));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let result = desk.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('z'), Modifiers::NONE)),
+            &mut ctx,
+        );
+        assert_eq!(result, EventResult::Ignored);
+        assert!(ctx.posted().is_empty());
+    }
+
+    #[test]
+    fn a_disabled_accelerator_command_still_consumes_the_key_but_posts_nothing() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        desk.bind_accelerator(Accelerator::new(
+            KeyEvent::new(KeyCode::Char('o'), Modifiers::CONTROL),
+            CM_HELP,
+        ));
+        let mut cs = CommandSet::new();
+        cs.disable(CM_HELP);
+        let mut ctx = Context::new(&cs);
+        let result = desk.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('o'), Modifiers::CONTROL)),
+            &mut ctx,
+        );
+        assert_eq!(result, EventResult::Consumed, "the key is still swallowed");
+        assert!(
+            ctx.posted().is_empty(),
+            "but the disabled command never fires"
+        );
     }
 
     #[test]

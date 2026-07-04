@@ -42,7 +42,7 @@ use rvision::backend::Backend;
 use rvision::buffer::Buffer;
 use rvision::canvas::Canvas;
 use rvision::cell::Cell;
-use rvision::command::{CM_CANCEL, CM_OK, CM_QUIT, CM_USER, Command, CommandSet};
+use rvision::command::{Accelerator, CM_CANCEL, CM_OK, CM_QUIT, CM_USER, Command, CommandSet};
 use rvision::crossterm_backend::CrosstermBackend;
 use rvision::event::{Event, EventResult, KeyCode, KeyEvent, Modifiers};
 use rvision::geometry::{Point, Rect, Size};
@@ -418,33 +418,47 @@ fn main() -> io::Result<()> {
             StatusItem::new(
                 "Ctrl-O",
                 "Open",
-                KeyEvent::new(KeyCode::Char('o'), Modifiers::CONTROL),
-                CM_OPEN,
+                Accelerator::new(
+                    KeyEvent::new(KeyCode::Char('o'), Modifiers::CONTROL),
+                    CM_OPEN,
+                ),
             ),
             StatusItem::new(
                 "Ctrl-S",
                 "Save",
-                KeyEvent::new(KeyCode::Char('s'), Modifiers::CONTROL),
-                CM_SAVE,
+                Accelerator::new(
+                    KeyEvent::new(KeyCode::Char('s'), Modifiers::CONTROL),
+                    CM_SAVE,
+                ),
             ),
             StatusItem::new(
                 "Ctrl-R",
                 "Refresh",
-                KeyEvent::new(KeyCode::Char('r'), Modifiers::CONTROL),
-                CM_REFRESH,
+                Accelerator::new(
+                    KeyEvent::new(KeyCode::Char('r'), Modifiers::CONTROL),
+                    CM_REFRESH,
+                ),
             ),
             StatusItem::new(
                 "Alt-X",
                 "Exit",
-                KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT),
-                CM_QUIT,
+                Accelerator::new(KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT), CM_QUIT),
             ),
         ],
         theme.style(Role::StatusBar),
         theme.style(Role::StatusKey),
     );
 
-    let shell = Shell::new(size, menu_bar, desktop, status, &theme);
+    let mut shell = Shell::new(size, menu_bar, desktop, status, &theme);
+    // "Save As..." has no status-line slot (there's no room, and Ctrl-O/S/R
+    // already cover the common path) but its Ctrl-A shortcut should still
+    // work — bound directly onto the desktop (ADR 0028), with no StatusItem
+    // involved. This used to be a real, silent gap: the menu showed
+    // "Ctrl-A" as a reminder next to Save As... but nothing ever bound it.
+    shell.desktop_mut().bind_accelerator(Accelerator::new(
+        KeyEvent::new(KeyCode::Char('a'), Modifiers::CONTROL),
+        CM_SAVE_AS,
+    ));
 
     let mut demo = HelpBuilderDemo {
         shell,

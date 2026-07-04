@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 
 pub use crate::event::Command;
+use crate::event::KeyEvent;
 
 /// Quit the application (TurboVision's `cmQuit`).
 pub const CM_QUIT: Command = Command(1);
@@ -86,9 +87,92 @@ impl CommandSet {
     }
 }
 
+/// One keyboard shortcut: `key` fires `command` (ADR 0028). The framework's
+/// system-level, app-agnostic unit of a global accelerator binding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Accelerator {
+    key: KeyEvent,
+    command: Command,
+}
+
+impl Accelerator {
+    /// Creates a binding: pressing `key` fires `command`.
+    pub fn new(key: KeyEvent, command: Command) -> Self {
+        Self { key, command }
+    }
+}
+
+/// A table of [`Accelerator`] bindings (ADR 0028), owned by
+/// [`Desktop`](crate::widgets::Desktop) — the system-level home for "does
+/// this key fire a command," independent of whether anything displays it
+/// (unlike the app-specific status-line hint it replaces). Only
+/// `Accelerator` itself is public API; the table is an internal
+/// implementation detail resolved against.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Accelerators {
+    bindings: Vec<Accelerator>,
+}
+
+impl Accelerators {
+    /// An empty table.
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a binding. Idempotent-adjacent: binding the same key twice just
+    /// means the first one added keeps winning (see `resolve`) — a
+    /// collision is a programming mistake, not a runtime condition worth
+    /// detecting.
+    pub(crate) fn bind(&mut self, accelerator: Accelerator) {
+        self.bindings.push(accelerator);
+    }
+
+    /// The command bound to `key`, if any — the first one bound, if more
+    /// than one binding names the same key.
+    pub(crate) fn resolve(&self, key: &KeyEvent) -> Option<Command> {
+        self.bindings
+            .iter()
+            .find(|accelerator| accelerator.key == *key)
+            .map(|accelerator| accelerator.command)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::event::{KeyCode, KeyEvent, Modifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, Modifiers::CONTROL)
+    }
+
+    #[test]
+    fn accelerators_start_empty_and_resolve_nothing() {
+        let table = Accelerators::new();
+        assert_eq!(table.resolve(&key(KeyCode::Char('o'))), None);
+    }
+
+    #[test]
+    fn a_bound_key_resolves_to_its_command() {
+        let mut table = Accelerators::new();
+        table.bind(Accelerator::new(key(KeyCode::Char('o')), CM_OK));
+        assert_eq!(table.resolve(&key(KeyCode::Char('o'))), Some(CM_OK));
+    }
+
+    #[test]
+    fn an_unbound_key_resolves_to_none() {
+        let mut table = Accelerators::new();
+        table.bind(Accelerator::new(key(KeyCode::Char('o')), CM_OK));
+        assert_eq!(table.resolve(&key(KeyCode::Char('s'))), None);
+    }
+
+    #[test]
+    fn the_first_bound_match_wins() {
+        let mut table = Accelerators::new();
+        table.bind(Accelerator::new(key(KeyCode::Char('o')), CM_OK));
+        table.bind(Accelerator::new(key(KeyCode::Char('o')), CM_CANCEL));
+        assert_eq!(table.resolve(&key(KeyCode::Char('o'))), Some(CM_OK));
+    }
 
     // Tracer bullet: everything is enabled until explicitly disabled.
     #[test]

@@ -413,13 +413,23 @@ impl Shell {
     /// positioning each to the matching region. `theme` is kept to build a
     /// [`ContextMenu`] on demand (ADR 0019); the three chrome pieces have
     /// already resolved their own styles from it.
+    ///
+    /// Every `status_line` item's [`Accelerator`](crate::command::Accelerator)
+    /// is fed into `desktop`'s global accelerator table (ADR 0028) — building
+    /// a `StatusItem`, as before, is enough to get a working shortcut. A
+    /// shortcut that shouldn't take a status-line slot at all still works:
+    /// call [`desktop_mut`](Self::desktop_mut)`().bind_accelerator(...)`
+    /// directly, with no `StatusItem` involved.
     pub fn new(
         size: Size,
         menu_bar: MenuBar,
-        desktop: Desktop,
+        mut desktop: Desktop,
         status_line: StatusLine,
         theme: &Theme,
     ) -> Self {
+        for accelerator in status_line.accelerators() {
+            desktop.bind_accelerator(accelerator);
+        }
         let mut shell = Self {
             menu_bar,
             desktop,
@@ -647,7 +657,7 @@ mod tests {
     use crate::backend::TestBackend;
     use crate::cell::Cell;
     use crate::color::Style;
-    use crate::command::{CM_CANCEL, CM_OK, CM_USER, Command};
+    use crate::command::{Accelerator, CM_CANCEL, CM_OK, CM_USER, Command};
     use crate::event::{KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseKind};
     use crate::geometry::{Point, Rect, Size};
     use crate::theme::{Role, Theme};
@@ -1008,14 +1018,12 @@ mod tests {
                 StatusItem::new(
                     "F1",
                     "Help",
-                    KeyEvent::new(KeyCode::F(1), Modifiers::NONE),
-                    CM_HELP,
+                    Accelerator::new(KeyEvent::new(KeyCode::F(1), Modifiers::NONE), CM_HELP),
                 ),
                 StatusItem::new(
                     "Alt-X",
                     "Exit",
-                    KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT),
-                    CM_QUIT,
+                    Accelerator::new(KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT), CM_QUIT),
                 ),
             ],
             theme.style(Role::StatusBar),
@@ -1117,6 +1125,63 @@ mod tests {
             &mut ctx,
         );
         assert_eq!(ctx.posted(), &[Event::Command(CM_HELP)]);
+    }
+
+    #[test]
+    fn shell_new_feeds_status_line_accelerators_into_the_desktop() {
+        // Proves the harvest happened *into Desktop's own table* at
+        // construction (ADR 0028), not merely "works when routed through
+        // Shell" — dispatch directly at the desktop, bypassing Shell::handle_event.
+        let mut sh = shell(Size::new(40, 10), no_log());
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let result = sh.desktop_mut().handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::F(1), Modifiers::NONE)),
+            &mut ctx,
+        );
+        assert_eq!(result, EventResult::Consumed);
+        assert_eq!(ctx.posted(), &[Event::Command(CM_HELP)]);
+    }
+
+    #[test]
+    fn bind_accelerator_works_with_no_matching_status_item() {
+        // The direct regression shape of the reported bug: a shortcut with
+        // no StatusLine slot at all still fires, once bound straight onto
+        // the desktop (ADR 0028) — no StatusItem involved.
+        use crate::theme::Role;
+        let theme = Theme::default();
+        let size = Size::new(40, 10);
+        let (w, h) = (size.width, size.height);
+        let menu_bar = MenuBar::new(full(Size::new(w, 1)), vec![], &theme);
+        let mut desktop = Desktop::new(
+            Rect::from_origin_size(Point::new(0, 1), Size::new(w, h - 2)),
+            Cell::from_char('░', theme.style(Role::DesktopBackground)),
+        );
+        desktop.open(Window::new(
+            Rect::from_origin_size(Point::new(2, 1), Size::new(20, 4)),
+            "Untitled",
+            &theme,
+            Box::new(StaticText::new(full(Size::new(18, 2)), "", Style::new())),
+        ));
+        let status = StatusLine::new(
+            Rect::from_origin_size(Point::new(0, h - 1), Size::new(w, 1)),
+            vec![],
+            theme.style(Role::StatusBar),
+            theme.style(Role::StatusKey),
+        );
+        let mut sh = Shell::new(size, menu_bar, desktop, status, &theme);
+        let hidden = Command(CM_USER + 30);
+        sh.desktop_mut().bind_accelerator(Accelerator::new(
+            KeyEvent::new(KeyCode::Char('a'), Modifiers::CONTROL),
+            hidden,
+        ));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        sh.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Char('a'), Modifiers::CONTROL)),
+            &mut ctx,
+        );
+        assert_eq!(ctx.posted(), &[Event::Command(hidden)]);
     }
 
     #[test]

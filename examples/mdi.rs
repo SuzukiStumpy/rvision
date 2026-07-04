@@ -39,7 +39,8 @@ use rvision::canvas::Canvas;
 use rvision::cell::Cell;
 use rvision::color::Style;
 use rvision::command::{
-    CM_CLOSE, CM_HELP, CM_NEXT, CM_PREV, CM_QUIT, CM_USER, CM_ZOOM, Command, CommandSet,
+    Accelerator, CM_CLOSE, CM_HELP, CM_NEXT, CM_PREV, CM_QUIT, CM_USER, CM_ZOOM, Command,
+    CommandSet,
 };
 use rvision::crossterm_backend::CrosstermBackend;
 use rvision::event::{Event, EventResult, KeyCode, KeyEvent, Modifiers};
@@ -291,44 +292,46 @@ fn main() -> io::Result<()> {
             StatusItem::new(
                 "Ctrl-N",
                 "New",
-                KeyEvent::new(KeyCode::Char('n'), Modifiers::CONTROL),
-                CM_NEW_WINDOW,
+                Accelerator::new(
+                    KeyEvent::new(KeyCode::Char('n'), Modifiers::CONTROL),
+                    CM_NEW_WINDOW,
+                ),
             ),
             StatusItem::new(
                 "Ctrl-W",
                 "Close",
-                KeyEvent::new(KeyCode::Char('w'), Modifiers::CONTROL),
-                CM_CLOSE,
+                Accelerator::new(
+                    KeyEvent::new(KeyCode::Char('w'), Modifiers::CONTROL),
+                    CM_CLOSE,
+                ),
             ),
             StatusItem::new(
                 "F5",
                 "Zoom",
-                KeyEvent::new(KeyCode::F(5), Modifiers::NONE),
-                CM_ZOOM,
+                Accelerator::new(KeyEvent::new(KeyCode::F(5), Modifiers::NONE), CM_ZOOM),
             ),
             StatusItem::new(
                 "F6",
                 "Next",
-                KeyEvent::new(KeyCode::F(6), Modifiers::NONE),
-                CM_NEXT,
+                Accelerator::new(KeyEvent::new(KeyCode::F(6), Modifiers::NONE), CM_NEXT),
             ),
             StatusItem::new(
                 "F9",
                 "Toolbox",
-                KeyEvent::new(KeyCode::F(9), Modifiers::NONE),
-                CM_TOGGLE_TOOLBOX,
+                Accelerator::new(
+                    KeyEvent::new(KeyCode::F(9), Modifiers::NONE),
+                    CM_TOGGLE_TOOLBOX,
+                ),
             ),
             StatusItem::new(
                 "F1",
                 "Help",
-                KeyEvent::new(KeyCode::F(1), Modifiers::NONE),
-                CM_HELP,
+                Accelerator::new(KeyEvent::new(KeyCode::F(1), Modifiers::NONE), CM_HELP),
             ),
             StatusItem::new(
                 "Alt-X",
                 "Exit",
-                KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT),
-                CM_QUIT,
+                Accelerator::new(KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT), CM_QUIT),
             ),
         ],
         theme.style(Role::StatusBar),

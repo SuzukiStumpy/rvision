@@ -5,7 +5,8 @@
 - **Related ADRs:** 0009 (this composite), 0003/0004 (tree + dispatch it sits on),
   0008 (`Canvas`), 0005 (roles), 0018 (cascading menus), 0019 (context menus,
   `context_menu` field + drained anchor request), 0021 (window-scoped context
-  help, `help`/`help_window` fields)
+  help, `help`/`help_window` fields), 0028 (global keyboard accelerator
+  table: `Shell::new` harvests `StatusLine`'s bindings into `Desktop`)
 
 ## Purpose
 
@@ -33,6 +34,8 @@ pub struct Shell {
     help_window: Option<WindowId>,        // ADR 0021: last help window opened, for singleton reuse
 }
 impl Shell {
+    /// Feeds every `status_line` item's `Accelerator` into `desktop`'s
+    /// global accelerator table (ADR 0028) before the rest of construction.
     pub fn new(size: Size, menu_bar: MenuBar, desktop: Desktop, status_line: StatusLine, theme: &Theme) -> Self;
     pub fn menu_is_open(&self) -> bool;
     // So application code can dynamically open/close/hide/show desktop
@@ -61,9 +64,16 @@ impl View for Shell { /* draws all four, routes events (below) */ }
 - **Key routing — three local passes (TurboVision pre/focused/post):**
   1. *menu bar* (pre-process): claims `Alt`+a title letter and `F10`; while a menu
      is open it is **modal**, consuming every key so nothing leaks to the editor.
-  2. *desktop* (focused): the active window, whose interior may post commands.
-  3. *status line* (post-process): global function-key / `Alt`-X hot-keys, tried
-     only after the focused view declined — so they never shadow typing.
+  2. *desktop* (focused, then a fallback of its own): the active window's
+     interior gets first refusal; only once it declines does `Desktop`
+     resolve the key against its own global accelerator table and post the
+     bound command, if any (ADR 0028) — this is where `StatusLine`'s
+     function-key/`Alt`-X hot-keys actually fire now, not in `status_line`
+     itself.
+  3. *status line* (post-process): purely a display pass at this point — a
+     pure `View` with no `handle_event` override, so it always returns
+     `Ignored` and this pass never actually claims anything; kept in the
+     chain unchanged since nothing needs removing it.
   The first pass to consume wins (`EventResult::or_else` chaining, ADR 0004).
 - **Other events.** `Mouse` → the region under the pointer in its local
   coordinates (behaviour mostly Phase 9; the seam exists now). A right-click
