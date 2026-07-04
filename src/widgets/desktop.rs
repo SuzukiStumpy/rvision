@@ -69,6 +69,14 @@ pub struct Desktop {
     active: Option<WindowId>,
     next_id: u64,
     drag: Option<DragSession>,
+    /// A window that asked (via `Context::request_mouse_capture`) to keep
+    /// receiving every mouse event regardless of pointer position, until
+    /// release — a scroll-bar thumb drag's use case, generalised so
+    /// `Desktop` needs no `ScrollBar` knowledge of its own (ADR 0027). Kept
+    /// separate from `drag`: `Move`/`Resize` are a `Desktop`-owned concept
+    /// (ADR 0016) where `Desktop` computes the new bounds itself; this is
+    /// the opposite — `Desktop` computes nothing, just keeps forwarding.
+    captured: Option<WindowId>,
 }
 
 impl Desktop {
@@ -81,6 +89,7 @@ impl Desktop {
             active: None,
             next_id: 0,
             drag: None,
+            captured: None,
         }
     }
 
@@ -309,9 +318,45 @@ impl Desktop {
         self.drag = Some(session);
     }
 
-    /// Positional dispatch, click-to-front, and drag/resize session handling
-    /// for a mouse event (ADR 0016).
+    /// Translates `mouse` into `id`'s local coordinates and forwards it,
+    /// restoring the offset afterward (so a nested `open_context_menu`
+    /// resolves correctly) — the shared tail of ordinary positional dispatch
+    /// and of forwarding a captured drag straight through (ADR 0027), which
+    /// skips the positional lookup this would otherwise be part of.
+    fn dispatch_to_window(
+        &mut self,
+        id: WindowId,
+        mouse: MouseEvent,
+        ctx: &mut Context,
+    ) -> EventResult {
+        let Some(window) = self.window_mut(id) else {
+            return EventResult::Ignored;
+        };
+        let origin = window.bounds().origin();
+        let translated = MouseEvent {
+            pos: mouse.pos.offset(-origin.x, -origin.y),
+            ..mouse
+        };
+        ctx.translated(origin.x, origin.y, |ctx| {
+            window.handle_event(&Event::Mouse(translated), ctx)
+        })
+    }
+
+    /// Positional dispatch, click-to-front, and drag/resize/capture session
+    /// handling for a mouse event (ADR 0016, ADR 0027).
     fn handle_mouse(&mut self, mouse: MouseEvent, ctx: &mut Context) -> EventResult {
+        // A view somewhere in this window's tree asked to keep receiving
+        // every event regardless of where the pointer wanders (ADR 0027) —
+        // takes priority over ordinary positional dispatch entirely, the
+        // same way a `Move`/`Resize` session below does.
+        if let Some(id) = self.captured {
+            let result = self.dispatch_to_window(id, mouse, ctx);
+            if matches!(mouse.kind, MouseKind::Up(_)) {
+                self.captured = None;
+            }
+            return result;
+        }
+
         if self.drag.is_some() {
             return match mouse.kind {
                 MouseKind::Drag(MouseButton::Left) => {
@@ -351,16 +396,11 @@ impl Desktop {
             return EventResult::Consumed;
         }
 
-        let translated = MouseEvent {
-            pos: local,
-            ..mouse
-        };
-        match self.window_mut(id) {
-            Some(window) => ctx.translated(origin.x, origin.y, |ctx| {
-                window.handle_event(&Event::Mouse(translated), ctx)
-            }),
-            None => EventResult::Ignored,
+        let result = self.dispatch_to_window(id, mouse, ctx);
+        if ctx.take_mouse_capture_request() {
+            self.captured = Some(id);
         }
+        result
     }
 
     /// Command interception: `CM_CLOSE`/`CM_ZOOM`/`CM_NEXT`/`CM_PREV` act
@@ -471,7 +511,7 @@ mod tests {
     use crate::event::{KeyCode, KeyEvent, Modifiers, MouseButton, MouseKind};
     use crate::geometry::Size;
     use crate::theme::{Role, Theme};
-    use crate::view::StaticText;
+    use crate::view::{AxisMetrics, ScrollMetrics, StaticText};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1043,6 +1083,103 @@ mod tests {
         let bounds = desk.window(id).unwrap().bounds();
         assert_eq!(bounds.size(), MIN_SIZE);
         assert_eq!(bounds.origin(), Point::new(2, 1));
+    }
+
+    // --- Scroll-bar thumb dragging via generic mouse capture (ADR 0027) ---
+
+    /// An interior that reports a fixed vertical overflow and records every
+    /// offset pushed to it — mirrors `window.rs`'s own private test double of
+    /// the same shape (not shared across files, test-only code).
+    struct Scrollable {
+        metrics: ScrollMetrics,
+        pushed: Rc<RefCell<Vec<Point>>>,
+    }
+
+    impl View for Scrollable {
+        fn bounds(&self) -> Rect {
+            rect(0, 0, 100, 100)
+        }
+        fn draw(&self, _canvas: &mut Canvas) {}
+        fn scroll_metrics(&self) -> Option<ScrollMetrics> {
+            Some(self.metrics)
+        }
+        fn set_scroll(&mut self, offset: Point) {
+            self.pushed.borrow_mut().push(offset);
+        }
+    }
+
+    fn vertical_metrics(total: usize, visible: usize, pos: usize) -> ScrollMetrics {
+        ScrollMetrics {
+            horizontal: None,
+            vertical: Some(AxisMetrics {
+                total,
+                visible,
+                pos,
+            }),
+        }
+    }
+
+    #[test]
+    fn thumb_drag_moves_the_scroll_position_even_outside_the_windows_bounds() {
+        let pushed = Rc::new(RefCell::new(Vec::new()));
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        desk.open(Window::new(
+            rect(2, 1, 12, 8),
+            "W",
+            &Theme::default(),
+            Box::new(Scrollable {
+                metrics: vertical_metrics(20, 6, 0),
+                pushed: Rc::clone(&pushed),
+            }),
+        ));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+
+        // Window-local (11, 2): the vertical bar's thumb, one row under the
+        // up arrow at scroll pos 0 (bar spans window-local rows 1..7, column
+        // 11 on a 12-wide/8-tall window).
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(13, 3),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(desk.handle_event(&down, &mut ctx), EventResult::Consumed);
+        assert!(
+            pushed.borrow().is_empty(),
+            "anchors the drag, no scroll yet"
+        );
+
+        // Far outside the window's own bounds entirely (the window spans
+        // absolute rows 1..9) — proving this is a real Desktop-level mouse
+        // capture, not ordinary positional dispatch, which would have
+        // ignored a point outside every window.
+        let drag = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(13, 15),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(desk.handle_event(&drag, &mut ctx), EventResult::Consumed);
+        assert_eq!(
+            *pushed.borrow(),
+            vec![Point::new(0, 14)],
+            "dragging far past the track clamps to the maximum scroll position"
+        );
+
+        let up = Event::Mouse(MouseEvent {
+            kind: MouseKind::Up(MouseButton::Left),
+            pos: Point::new(13, 15),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(desk.handle_event(&up, &mut ctx), EventResult::Consumed);
+
+        // The capture has ended: a stray drag with no preceding Down does nothing.
+        let stray = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(13, 3),
+            modifiers: Modifiers::NONE,
+        });
+        desk.handle_event(&stray, &mut ctx);
+        assert_eq!(pushed.borrow().len(), 1, "no further pushes after Up");
     }
 
     #[test]

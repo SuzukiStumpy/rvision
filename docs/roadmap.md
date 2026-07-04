@@ -264,6 +264,49 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      shape as the theme builder: a thin wrapper that saves through #9's
      resource loader to the app-defaults layer. Its editing pane needs a
      multi-line text-entry control, which doesn't exist yet — see #6.
+   - ~~Help authoring tool.~~ Landed 2026-07-04: `examples/help_builder.rs` —
+     a raw-markup `TextArea` source pane beside a live preview through the
+     existing `HelpPane` renderer, via an ordinary, unmodified
+     `HelpWindow::build` (not a new composite) closed and reopened on an
+     explicit **Refresh Preview** (`Ctrl+R`) rather than reparsed on every
+     keystroke — so a half-typed `{label|target}` link is never shown broken
+     mid-edit, and link-following in the preview genuinely works via
+     `HelpWindow`'s own already-tested mechanics, for free. Saving diverged
+     from this item's own scoping note above once actually built: rather
+     than a fixed `<app-resources-dir>`/`RESOURCE_NAME` pair mirroring the
+     theme builder, it opens a `widgets::FileDialog` **Save As** dialog the
+     first time (or any time, via the File menu), remembering the chosen
+     path so subsequent `Ctrl+S` saves silently — saving is deliberately
+     never a quit signal, so progress can be saved repeatedly mid-session.
+     The source window's title grows a trailing `" *"` while there are
+     unsaved edits (`edit`'s own dirty-file convention), which needed one
+     small, generic library addition: `Frame::set_title`/`Window::set_title`
+     (`docs/specs/window.md`) — a runtime title setter alongside the
+     existing `set_active`-style setters, additive in the same family as
+     `with_help_topic`, no new ADR. No new `src/widgets` composite either:
+     unlike the theme editor, this item was only ever scoped as a utility
+     program (#3), not a standard dialog (#2), so the whole tool is
+     application-layer glue over already-tested pieces (`TextArea`,
+     `HelpPane`/`HelpWindow`, `HelpContents::parse`, `FileDialog`), verified
+     manually (including a real resize, drag, Save/Save-As/Cancel, and
+     CLI-argument round-trip pass) rather than with `#[test]` — same
+     precedent as the theme editor/builder examples. Still open: the preview
+     only reflects the state as of the last refresh and always reopens on
+     the home topic; there is no unsaved-changes prompt on quit — accepted
+     simplifications, not oversights.
+   - Follow-up 2026-07-04: the first cut only let a file be *loaded* via the
+     CLI argument at startup — nothing let a user load a different existing
+     file once the tool was already running. Added File ▸ Open... (`Ctrl+O`),
+     a `widgets::FileDialog::open` opened/tracked the same way as Save As
+     (unified into one `PendingDialog { window_id, result, action }` plus a
+     `PendingAction::{Save, Open}` tag, replacing the Save-only `PendingSave`,
+     since `CM_OK`/`CM_CANCEL` are shared and only one dialog kind can be
+     pending at a time either way). Loading replaces the source pane's text
+     outright and becomes the path subsequent `Ctrl+S` saves target — no
+     unsaved-changes prompt, the same accepted simplicity as Exit above — and
+     deliberately does *not* auto-refresh the preview, keeping Refresh the
+     one explicit "reflect the source now" action everywhere, not just after
+     typing.
 4. **Python bindings.** Write `rvision` applications with Python as the
    application layer calling into the library.
 5. **TypeScript/JavaScript bindings.** Similar goal to the Python bindings;

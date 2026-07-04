@@ -75,6 +75,11 @@ pub struct FileDialog {
     /// Shared with the [`FileDialogResult`] handle returned alongside the
     /// window: written whenever a path is accepted (ADR 0016).
     result: Rc<RefCell<PathBuf>>,
+    /// Whether the list's own hosted scroll bar's thumb is mid-drag (ADR
+    /// 0027) — set on a `Down` hit on it, alongside a mouse-capture request
+    /// so `Desktop` keeps forwarding events here regardless of pointer
+    /// position; cleared on `Up`.
+    dragging_thumb: bool,
 }
 
 /// A handle to the path a [`FileDialog`] was accepted with, readable after
@@ -156,6 +161,7 @@ impl FileDialog {
             ),
             focus: FOCUS_LIST,
             result: Rc::new(RefCell::new(PathBuf::new())),
+            dragging_thumb: false,
         };
         dialog.set_dir(dir);
         dialog
@@ -263,8 +269,11 @@ impl FileDialog {
     /// If `local` (in the list's own local coordinates) is a press/double-click
     /// landing on the hosted scroll bar, scrolls accordingly and reports `true`
     /// — the caller skips forwarding the event into the list itself. `false`
-    /// means "not a bar hit," including when the list has no bar to hit.
-    fn handle_list_bar_hit(&mut self, local: Point, kind: MouseKind) -> bool {
+    /// means "not a bar hit," including when the list has no bar to hit. A hit
+    /// on the thumb itself starts a drag (ADR 0027) instead of scrolling
+    /// directly: marks `dragging_thumb` and asks `Desktop` (via `ctx`) to keep
+    /// forwarding events here regardless of pointer position, until release.
+    fn handle_list_bar_hit(&mut self, local: Point, kind: MouseKind, ctx: &mut Context) -> bool {
         if !matches!(
             kind,
             MouseKind::Down(MouseButton::Left) | MouseKind::DoubleClick(MouseButton::Left)
@@ -277,6 +286,11 @@ impl FileDialog {
         let Some(part) = bar.hit(local) else {
             return false;
         };
+        if part == ScrollPart::Thumb {
+            self.dragging_thumb = true;
+            ctx.request_mouse_capture();
+            return true;
+        }
         let visible = self
             .list
             .scroll_metrics()
@@ -289,7 +303,7 @@ impl FileDialog {
             ScrollPart::LineDown => self.scroll_list_by(1),
             ScrollPart::PageUp => self.scroll_list_by(-page),
             ScrollPart::PageDown => self.scroll_list_by(page),
-            ScrollPart::Thumb => {} // dragging the thumb rides on window drag infra (Phase 9d)
+            ScrollPart::Thumb => unreachable!("handled above"),
         }
         true
     }
@@ -344,6 +358,37 @@ impl FileDialog {
     /// list mirrors arrow navigation by syncing the name field to the new
     /// selection.
     fn handle_mouse(&mut self, m: &MouseEvent, ctx: &mut Context) -> EventResult {
+        // A thumb drag in progress (ADR 0027) takes every event ahead of the
+        // usual positional lookup below — `Desktop`'s mouse capture keeps
+        // delivering these regardless of where the pointer strayed, so
+        // position isn't re-checked here either.
+        if matches!(m.kind, MouseKind::Up(MouseButton::Left)) {
+            let was_dragging = self.dragging_thumb;
+            self.dragging_thumb = false;
+            return if was_dragging {
+                EventResult::Consumed
+            } else {
+                EventResult::Ignored
+            };
+        }
+        if self.dragging_thumb {
+            if let MouseKind::Drag(MouseButton::Left) = m.kind {
+                if let Some(bar) = self.list_scroll_bar() {
+                    let list_origin = self.list.bounds().origin();
+                    let local = m.pos.offset(-list_origin.x, -list_origin.y);
+                    let target = bar.pos_at(local);
+                    let current = self
+                        .list
+                        .scroll_metrics()
+                        .and_then(|sm| sm.vertical)
+                        .map(|v| v.pos)
+                        .unwrap_or(0);
+                    self.scroll_list_by(target as isize - current as isize);
+                }
+                return EventResult::Consumed;
+            }
+        }
+
         let p = m.pos;
         let bounds = [
             self.list.bounds(),
@@ -370,7 +415,7 @@ impl FileDialog {
         });
         match i {
             FOCUS_LIST => {
-                let result = if self.handle_list_bar_hit(local_pos, m.kind) {
+                let result = if self.handle_list_bar_hit(local_pos, m.kind, ctx) {
                     EventResult::Consumed
                 } else {
                     self.list.handle_event(&local, ctx)
@@ -764,6 +809,113 @@ mod tests {
             "a bar click never changes the selection"
         );
         assert!(ctx.posted().is_empty(), "and never posts a command");
+    }
+
+    #[test]
+    fn dragging_the_hosted_bars_thumb_scrolls_the_list() {
+        let mut d = dialog_with_many_files();
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let before_selection = d.list.selected();
+        let list_origin = d.list.bounds().origin();
+
+        // List-local (43, 1): the thumb at scroll pos 0 (one row under the up
+        // arrow, on a 10-row-visible/16-entry list) — list-local to
+        // interior-local via the list's own origin, same as the bar-arrow
+        // test above.
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(43, 1).offset(list_origin.x, list_origin.y),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(d.handle_event(&down, &mut ctx), EventResult::Consumed);
+        assert_eq!(
+            d.list.scroll_metrics().unwrap().vertical.unwrap().pos,
+            0,
+            "anchors only, no scroll yet"
+        );
+        assert!(
+            ctx.take_mouse_capture_request(),
+            "asks Desktop to keep delivering events regardless of position"
+        );
+
+        let drag = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(43, 4).offset(list_origin.x, list_origin.y),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(d.handle_event(&drag, &mut ctx), EventResult::Consumed);
+        assert_eq!(d.list.scroll_metrics().unwrap().vertical.unwrap().pos, 3);
+        assert_eq!(
+            d.list.selected(),
+            before_selection,
+            "a thumb drag never changes the selection"
+        );
+
+        let up = Event::Mouse(MouseEvent {
+            kind: MouseKind::Up(MouseButton::Left),
+            pos: Point::new(43, 4).offset(list_origin.x, list_origin.y),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(d.handle_event(&up, &mut ctx), EventResult::Consumed);
+
+        let stray = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(43, 9).offset(list_origin.x, list_origin.y),
+            modifiers: Modifiers::NONE,
+        });
+        d.handle_event(&stray, &mut ctx);
+        assert_eq!(
+            d.list.scroll_metrics().unwrap().vertical.unwrap().pos,
+            3,
+            "no further scroll after Up"
+        );
+    }
+
+    #[test]
+    fn clicking_a_row_far_from_the_bar_selects_it_even_while_scrolled() {
+        // Regression: a click anywhere in the bar's *row* range — even nowhere
+        // near its column — used to be misread as a scroll-bar hit
+        // (`ScrollBar::hit` didn't check the cross-axis coordinate), reported
+        // as clicking a file in a real, overflowing directory listing
+        // appearing to "reset" the view instead of selecting what was
+        // actually clicked.
+        let mut d = dialog_with_many_files();
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        d.scroll_list_by(3); // top = 3: row 0 now shows f02.txt
+        let list_origin = d.list.bounds().origin();
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(2, 2).offset(list_origin.x, list_origin.y),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(d.handle_event(&click, &mut ctx), EventResult::Consumed);
+        assert_eq!(
+            d.list.scroll_metrics().unwrap().vertical.unwrap().pos,
+            3,
+            "a plain content click never scrolls"
+        );
+        assert_eq!(d.list.selected(), Some(5), "row top(3) + local y(2)");
+        assert_eq!(d.input.text(), "f04.txt");
+    }
+
+    #[test]
+    fn double_clicking_a_row_far_from_the_bar_accepts_it_even_while_scrolled() {
+        let mut d = dialog_with_many_files();
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        d.scroll_list_by(3);
+        let list_origin = d.list.bounds().origin();
+        let dc = Event::Mouse(MouseEvent {
+            kind: MouseKind::DoubleClick(MouseButton::Left),
+            pos: Point::new(2, 2).offset(list_origin.x, list_origin.y),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(d.handle_event(&dc, &mut ctx), EventResult::Consumed);
+        assert_eq!(d.list.selected(), Some(5));
+        assert_eq!(ctx.take_posted(), vec![Event::Command(CM_OK)]);
+        assert_eq!(d.path(), PathBuf::from("/many/f04.txt"));
     }
 
     // --- The assembled Window (ADR 0016): chrome, ending, Esc ---

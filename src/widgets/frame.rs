@@ -172,6 +172,13 @@ impl Frame {
         self.maximized = maximized;
     }
 
+    /// Sets the title in place, mirroring [`set_active`](Self::set_active) —
+    /// purely cosmetic, `draw_title` already truncates to fit dynamically, so
+    /// there is nothing else derived from the title to recompute.
+    pub fn set_title(&mut self, title: &str) {
+        self.title = title.to_string();
+    }
+
     /// Whether a `width`-wide frame is wide enough to draw its glyphs — three
     /// (close/zoom/help) when `help` is set, two otherwise (ADR 0021's
     /// all-or-nothing gate: a narrow frame drops every glyph it would need
@@ -370,6 +377,16 @@ mod tests {
         assert!(!render(&frame, 20, 3).contains('↑'));
         frame.set_maximized(false);
         assert!(render(&frame, 20, 3).contains('↑'));
+    }
+
+    #[test]
+    fn set_title_changes_the_drawn_title_in_place() {
+        let mut frame = Frame::new("Old", Style::new(), Style::new());
+        assert!(render(&frame, 20, 3).contains("Old"));
+        frame.set_title("New");
+        let text = render(&frame, 20, 3);
+        assert!(text.contains("New"));
+        assert!(!text.contains("Old"));
     }
 
     #[test]

@@ -39,5 +39,6 @@ workspace from the start, so it kept its original number unchanged.
 | [0024](0024-layered-resource-loading.md) | Layered resource loading: shared path resolution, per-kind format & merge |
 | [0025](0025-theme-file-format-and-merge.md) | Theme file format: dotted `key = value`, infallible merge via `Theme::with` |
 | [0026](0026-theme-editor-desktop-composition.md) | Theme editor: `Desktop`-hosted composition via bubbled commands and a read/write handle |
+| [0027](0027-mouse-capture-for-drag-interactions.md) | Generic mouse capture (`Context`/`Desktop`) for continuous drag interactions, e.g. scroll-bar thumbs |
 
 New decision? Copy [`0000-template.md`](0000-template.md).

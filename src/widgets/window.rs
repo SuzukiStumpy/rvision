@@ -71,6 +71,12 @@ pub struct Window {
     /// The bounds and `casts_shadow` setting to restore on the next zoom
     /// toggle, set while `maximized`.
     restore: Option<(Rect, bool)>,
+    /// Which hosted scroll bar (if any) is currently mid-thumb-drag —
+    /// `Some(true)`/`Some(false)` for the vertical/horizontal bar (ADR 0027).
+    /// Set on a `Down` hit on a bar's `Thumb`, alongside a mouse-capture
+    /// request so `Desktop` keeps forwarding events here regardless of where
+    /// the pointer wanders; cleared on `Up`.
+    dragging: Option<bool>,
 }
 
 impl Window {
@@ -133,6 +139,7 @@ impl Window {
             visible: true,
             maximized: false,
             restore: None,
+            dragging: None,
         }
     }
 
@@ -279,6 +286,13 @@ impl Window {
         self.casts_shadow = casts;
     }
 
+    /// Changes the title in place, forwarding to the frame — an app's own
+    /// chrome (e.g. an unsaved-changes `" *"` marker), not anything this
+    /// module has an opinion about.
+    pub fn set_title(&mut self, title: &str) {
+        self.frame.set_title(title);
+    }
+
     /// Where [`exec_view`](crate::app::Application::exec_view)/[`Desktop::open`](super::Desktop::open)
     /// should position this window at the start of its run.
     pub fn placement(&self) -> Placement {
@@ -412,8 +426,17 @@ impl Window {
 
     /// Handles a click landing on a hosted scroll bar: `vertical` selects which
     /// axis's bar to test. Returns whether the click landed on it (and was
-    /// therefore handled) at all.
-    fn handle_scroll_bar_click(&mut self, pos: Point, kind: MouseKind, vertical: bool) -> bool {
+    /// therefore handled) at all. A hit on the thumb itself starts a drag
+    /// (ADR 0027) instead of nudging anything directly: it marks `dragging`
+    /// and asks `Desktop` (via `ctx`) to keep forwarding events here
+    /// regardless of where the pointer wanders, until release.
+    fn handle_scroll_bar_click(
+        &mut self,
+        pos: Point,
+        kind: MouseKind,
+        vertical: bool,
+        ctx: &mut Context,
+    ) -> bool {
         if !matches!(
             kind,
             MouseKind::Down(MouseButton::Left) | MouseKind::DoubleClick(MouseButton::Left)
@@ -432,6 +455,11 @@ impl Window {
             return false;
         }
         if let Some(part) = bar.hit(pos) {
+            if part == ScrollPart::Thumb {
+                self.dragging = Some(vertical);
+                ctx.request_mouse_capture();
+                return true;
+            }
             let page = if vertical {
                 self.interior
                     .scroll_metrics()
@@ -451,7 +479,7 @@ impl Window {
                 ScrollPart::LineDown => 1,
                 ScrollPart::PageUp => -page,
                 ScrollPart::PageDown => page,
-                ScrollPart::Thumb => 0, // dragging the thumb rides on window drag infra (Phase 9d)
+                ScrollPart::Thumb => unreachable!("handled above"),
             };
             if vertical {
                 self.nudge_scroll(delta, 0);
@@ -460,6 +488,39 @@ impl Window {
             }
         }
         true
+    }
+
+    /// Continues an in-progress thumb drag (ADR 0027): recomputes the
+    /// relevant bar fresh, maps `pos` to the absolute scroll position its
+    /// thumb would sit at (`ScrollBar::pos_at`, which clamps even when `pos`
+    /// is far outside the bar's own track — expected once `Desktop`'s
+    /// capture keeps delivering events regardless of where the pointer
+    /// strayed), and reuses the existing delta-based `nudge_scroll`.
+    fn drag_scroll_thumb(&mut self, vertical: bool, pos: Point) {
+        let bar = if vertical {
+            self.vertical_scroll_bar()
+        } else {
+            self.horizontal_scroll_bar()
+        };
+        let Some(bar) = bar else {
+            return;
+        };
+        let Some(metrics) = self.interior.scroll_metrics() else {
+            return;
+        };
+        let current = if vertical {
+            metrics.vertical.map(|a| a.pos)
+        } else {
+            metrics.horizontal.map(|a| a.pos)
+        }
+        .unwrap_or(0);
+        let target = bar.pos_at(pos);
+        let delta = target as isize - current as isize;
+        if vertical {
+            self.nudge_scroll(delta, 0);
+        } else {
+            self.nudge_scroll(0, delta);
+        }
     }
 }
 
@@ -492,6 +553,22 @@ impl View for Window {
     fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
         match event {
             Event::Mouse(mouse) => {
+                // A thumb drag in progress (ADR 0027) takes every event ahead
+                // of everything else below — `Desktop`'s mouse capture keeps
+                // delivering these regardless of where the pointer strayed,
+                // so position isn't re-checked here either.
+                if matches!(mouse.kind, MouseKind::Up(MouseButton::Left)) {
+                    let was_dragging = self.dragging.take().is_some();
+                    if was_dragging {
+                        return EventResult::Consumed;
+                    }
+                }
+                if let Some(vertical) = self.dragging {
+                    if matches!(mouse.kind, MouseKind::Drag(MouseButton::Left)) {
+                        self.drag_scroll_thumb(vertical, mouse.pos);
+                        return EventResult::Consumed;
+                    }
+                }
                 // The close/zoom glyphs sit on the top border row (ADR 0016);
                 // neither is interactive when its flag is off (nor drawn there —
                 // see Frame), so there is nothing to hit.
@@ -522,8 +599,8 @@ impl View for Window {
                         }
                     }
                 }
-                if self.handle_scroll_bar_click(mouse.pos, mouse.kind, true)
-                    || self.handle_scroll_bar_click(mouse.pos, mouse.kind, false)
+                if self.handle_scroll_bar_click(mouse.pos, mouse.kind, true, ctx)
+                    || self.handle_scroll_bar_click(mouse.pos, mouse.kind, false, ctx)
                 {
                     return EventResult::Consumed;
                 }
@@ -700,6 +777,23 @@ mod tests {
         assert!(!w.is_active());
         w.set_active(true);
         assert!(w.is_active());
+    }
+
+    #[test]
+    fn set_title_changes_the_drawn_title() {
+        let mut w = Window::new(rect(0, 0, 20, 4), "Old", &theme(), blank());
+        let mut buf = Buffer::new(Size::new(20, 4));
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        assert!(buf.to_text().contains("Old"));
+
+        w.set_title("New");
+        let mut buf = Buffer::new(Size::new(20, 4));
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        let text = buf.to_text();
+        assert!(text.contains("New"));
+        assert!(!text.contains("Old"));
     }
 
     // --- New Window/Dialog-unification behaviour (ADR 0016) ---
@@ -1083,6 +1177,79 @@ mod tests {
         let mut ctx = Context::new(&cs);
         assert_eq!(w.handle_event(&click, &mut ctx), EventResult::Consumed);
         assert_eq!(*pushed.borrow(), vec![Point::new(0, 1)]);
+    }
+
+    // --- Scroll-bar thumb dragging via generic mouse capture (ADR 0027) ---
+
+    #[test]
+    fn clicking_the_verticals_bar_thumb_anchors_a_drag_without_scrolling() {
+        let pushed = Rc::new(RefCell::new(Vec::new()));
+        let mut w = plain(
+            rect(0, 0, 20, 8),
+            Box::new(Scrollable {
+                metrics: vertical_metrics(20, 6, 0),
+                pushed: Rc::clone(&pushed),
+            }),
+        );
+        // The bar spans rows 1..6 (up arrow at row 1, down arrow at row 6);
+        // the thumb at scroll pos 0 sits at row 2, one row under the up
+        // arrow, same column (19) as the down-arrow test above.
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(19, 2),
+            modifiers: Modifiers::NONE,
+        });
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert_eq!(w.handle_event(&down, &mut ctx), EventResult::Consumed);
+        assert!(pushed.borrow().is_empty(), "anchors only, no scroll yet");
+        assert!(
+            ctx.take_mouse_capture_request(),
+            "asks Desktop to keep delivering events regardless of position"
+        );
+    }
+
+    #[test]
+    fn dragging_the_thumb_scrolls_to_the_pos_at_target_then_up_ends_it() {
+        let pushed = Rc::new(RefCell::new(Vec::new()));
+        let mut w = plain(
+            rect(0, 0, 20, 8),
+            Box::new(Scrollable {
+                metrics: vertical_metrics(20, 6, 0),
+                pushed: Rc::clone(&pushed),
+            }),
+        );
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(19, 2),
+            modifiers: Modifiers::NONE,
+        });
+        w.handle_event(&down, &mut ctx);
+
+        let drag = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(19, 4),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(w.handle_event(&drag, &mut ctx), EventResult::Consumed);
+        assert_eq!(*pushed.borrow(), vec![Point::new(0, 9)]);
+
+        let up = Event::Mouse(MouseEvent {
+            kind: MouseKind::Up(MouseButton::Left),
+            pos: Point::new(19, 4),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(w.handle_event(&up, &mut ctx), EventResult::Consumed);
+
+        let stray = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(19, 6),
+            modifiers: Modifiers::NONE,
+        });
+        w.handle_event(&stray, &mut ctx);
+        assert_eq!(pushed.borrow().len(), 1, "no further pushes after Up");
     }
 
     // --- Resize propagation to the interior (ADR 0017) ---

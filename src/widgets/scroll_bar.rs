@@ -102,16 +102,21 @@ impl ScrollBar {
 
     /// Classifies a click at `point` (in the bar's own coordinate space, the same
     /// as [`bounds`](ScrollBar::bounds)) into a [`ScrollPart`], or `None` if it is
-    /// off the bar. Arrows are the two end cells, the thumb is wherever
-    /// [`draw`](View::draw) paints it, and the rest of the track pages.
+    /// off the bar — checked against the *whole* of `bounds`, not just the
+    /// scroll axis, so a point merely sharing a row (vertical) or column
+    /// (horizontal) with the bar but actually elsewhere on screen correctly
+    /// misses (a real bug once let a `FileDialog` click anywhere on a hosted
+    /// list's row range be misread as a hit on its far-off scroll bar).
+    /// Arrows are the two end cells, the thumb is wherever [`draw`](View::draw)
+    /// paints it, and the rest of the track pages.
     pub fn hit(&self, point: Point) -> Option<ScrollPart> {
+        if !self.bounds.contains(point) {
+            return None;
+        }
         let (len, off) = match self.orientation {
             Orientation::Vertical => (self.bounds.height(), point.y - self.bounds.origin().y),
             Orientation::Horizontal => (self.bounds.width(), point.x - self.bounds.origin().x),
         };
-        if off < 0 || off >= len {
-            return None;
-        }
         if len == 1 {
             return Some(ScrollPart::Thumb); // a one-cell bar is all thumb
         }
@@ -317,5 +322,36 @@ mod tests {
         bar.set_metrics(10, 4, 0);
         assert_eq!(bar.hit(Point::new(0, 2)), Some(ScrollPart::LineUp));
         assert_eq!(bar.hit(Point::new(0, 7)), Some(ScrollPart::LineDown));
+    }
+
+    #[test]
+    fn a_point_outside_a_vertical_bars_column_hits_nothing() {
+        // A one-cell-wide vertical bar sitting at column 5: a point at the same
+        // row but a different column must miss, even though `hit` only measures
+        // offset along the vertical axis — regression for a real bug where a
+        // click far to the left of a hosted list's scroll bar, but on one of
+        // its rows, was misclassified as a bar hit (`FileDialog`'s embedded
+        // list, ADR 0015), silently paging/selecting instead of the click's
+        // own target.
+        let bar = ScrollBar::new(
+            Rect::from_origin_size(Point::new(5, 0), Size::new(1, 6)),
+            Style::new(),
+        );
+        assert_eq!(bar.hit(Point::new(0, 1)), None);
+        assert_eq!(bar.hit(Point::new(4, 1)), None);
+        assert_eq!(bar.hit(Point::new(6, 1)), None);
+        assert_eq!(bar.hit(Point::new(5, 1)), Some(ScrollPart::Thumb));
+    }
+
+    #[test]
+    fn a_point_outside_a_horizontal_bars_row_hits_nothing() {
+        let bar = ScrollBar::horizontal(
+            Rect::from_origin_size(Point::new(0, 3), Size::new(6, 1)),
+            Style::new(),
+        );
+        assert_eq!(bar.hit(Point::new(1, 0)), None);
+        assert_eq!(bar.hit(Point::new(1, 2)), None);
+        assert_eq!(bar.hit(Point::new(1, 4)), None);
+        assert_eq!(bar.hit(Point::new(0, 3)), Some(ScrollPart::LineUp));
     }
 }

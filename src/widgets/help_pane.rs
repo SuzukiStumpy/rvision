@@ -70,6 +70,12 @@ pub struct HelpPane {
     /// The *current* link, only while this pane is focused — mirrors
     /// `ListBox`'s own focused-row highlight, one level more granular.
     link_focus_style: Style,
+    /// Which hosted bar (if any) is currently mid-thumb-drag —
+    /// `Some(true)`/`Some(false)` for the vertical/horizontal bar (ADR 0027).
+    /// Set on a `Down` hit on a bar's `Thumb`, alongside a mouse-capture
+    /// request so `Desktop` keeps forwarding events here regardless of
+    /// pointer position; cleared on `Up`.
+    dragging: Option<bool>,
 }
 
 impl HelpPane {
@@ -90,6 +96,7 @@ impl HelpPane {
             style: theme.style(Role::DialogBackground),
             link_style: theme.style(Role::HelpLink),
             link_focus_style: theme.style(Role::Selection),
+            dragging: None,
         }
     }
 
@@ -291,10 +298,79 @@ impl HelpPane {
         self.left = ((self.left as isize) + delta).clamp(0, max) as usize;
     }
 
+    /// The vertical bar's current rect + metrics, if shown — recomputed
+    /// fresh each call (cheap; mirrors `FileDialog::list_scroll_bar`).
+    fn vertical_bar(&self) -> Option<ScrollBar> {
+        if !self.needs_vbar {
+            return None;
+        }
+        let text_w = self.text_w();
+        let text_rows = self.text_rows();
+        let mut bar = ScrollBar::new(
+            Rect::from_origin_size(Point::new(text_w, 0), Size::new(1, text_rows as i16)),
+            self.style,
+        );
+        bar.set_metrics(self.lines.len(), text_rows, self.top);
+        Some(bar)
+    }
+
+    /// The horizontal bar's current rect + metrics, if shown.
+    fn horizontal_bar(&self) -> Option<ScrollBar> {
+        if !self.needs_hbar {
+            return None;
+        }
+        let text_w = self.text_w();
+        let text_rows = self.text_rows();
+        let mut bar = ScrollBar::horizontal(
+            Rect::from_origin_size(Point::new(0, text_rows as i16), Size::new(text_w, 1)),
+            self.style,
+        );
+        bar.set_metrics(
+            self.content_width().max(0) as usize,
+            text_w as usize,
+            self.left,
+        );
+        Some(bar)
+    }
+
     /// Handles a mouse event in the pane's local coordinates: the wheel pans
-    /// vertically, and (when shown) each scroll bar's arrows/track scroll its axis.
-    /// Works regardless of focus, so the wheel acts under the pointer.
-    fn handle_mouse(&mut self, m: &MouseEvent) -> EventResult {
+    /// vertically, and (when shown) each scroll bar's arrows/track scroll its
+    /// axis. Works regardless of focus, so the wheel acts under the pointer.
+    /// A hit on a bar's thumb starts a drag (ADR 0027) instead of scrolling
+    /// directly: marks `dragging` and asks `Desktop` (via `ctx`) to keep
+    /// forwarding events here regardless of pointer position, until release.
+    fn handle_mouse(&mut self, m: &MouseEvent, ctx: &mut Context) -> EventResult {
+        // A thumb drag in progress takes every event ahead of everything
+        // below — `Desktop`'s mouse capture keeps delivering these
+        // regardless of where the pointer strayed, so position isn't
+        // re-checked here either.
+        if matches!(m.kind, MouseKind::Up(MouseButton::Left)) {
+            let was_dragging = self.dragging.take().is_some();
+            return if was_dragging {
+                EventResult::Consumed
+            } else {
+                EventResult::Ignored
+            };
+        }
+        if let Some(vertical) = self.dragging {
+            if matches!(m.kind, MouseKind::Drag(MouseButton::Left)) {
+                let bar = if vertical {
+                    self.vertical_bar()
+                } else {
+                    self.horizontal_bar()
+                };
+                if let Some(bar) = bar {
+                    let target = bar.pos_at(m.pos);
+                    if vertical {
+                        self.scroll_by(target as isize - self.top as isize);
+                    } else {
+                        self.scroll_h_by(target as isize - self.left as isize);
+                    }
+                }
+                return EventResult::Consumed;
+            }
+        }
+
         let text_w = self.text_w();
         let text_rows = self.text_rows();
         let vpage = text_rows.max(1) as isize;
@@ -313,36 +389,32 @@ impl HelpPane {
             MouseKind::Down(MouseButton::Left)
                 if self.needs_hbar && m.pos.y == text_rows as i16 && m.pos.x < text_w =>
             {
-                let mut bar = ScrollBar::horizontal(
-                    Rect::from_origin_size(Point::new(0, text_rows as i16), Size::new(text_w, 1)),
-                    self.style,
-                );
-                bar.set_metrics(
-                    self.content_width().max(0) as usize,
-                    text_w as usize,
-                    self.left,
-                );
+                let bar = self.horizontal_bar().expect("needs_hbar just checked");
                 match bar.hit(m.pos) {
                     Some(ScrollPart::LineUp) => self.scroll_h_by(-1),
                     Some(ScrollPart::LineDown) => self.scroll_h_by(1),
                     Some(ScrollPart::PageUp) => self.scroll_h_by(-hpage),
                     Some(ScrollPart::PageDown) => self.scroll_h_by(hpage),
-                    _ => {}
+                    Some(ScrollPart::Thumb) => {
+                        self.dragging = Some(false);
+                        ctx.request_mouse_capture();
+                    }
+                    None => {}
                 }
                 EventResult::Consumed
             }
             MouseKind::Down(MouseButton::Left) if self.needs_vbar && m.pos.x == text_w => {
-                let mut bar = ScrollBar::new(
-                    Rect::from_origin_size(Point::new(text_w, 0), Size::new(1, text_rows as i16)),
-                    self.style,
-                );
-                bar.set_metrics(self.lines.len(), text_rows, self.top);
+                let bar = self.vertical_bar().expect("needs_vbar just checked");
                 match bar.hit(m.pos) {
                     Some(ScrollPart::LineUp) => self.scroll_by(-1),
                     Some(ScrollPart::LineDown) => self.scroll_by(1),
                     Some(ScrollPart::PageUp) => self.scroll_by(-vpage),
                     Some(ScrollPart::PageDown) => self.scroll_by(vpage),
-                    _ => {}
+                    Some(ScrollPart::Thumb) => {
+                        self.dragging = Some(true);
+                        ctx.request_mouse_capture();
+                    }
+                    None => {}
                 }
                 EventResult::Consumed
             }
@@ -635,9 +707,9 @@ impl View for HelpPane {
         }
     }
 
-    fn handle_event(&mut self, event: &Event, _ctx: &mut Context) -> EventResult {
+    fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
         if let Event::Mouse(m) = event {
-            return self.handle_mouse(m);
+            return self.handle_mouse(m, ctx);
         }
         if let Event::Key(key) = event {
             if !self.focused {
@@ -916,6 +988,102 @@ mod tests {
         assert_eq!(p.text_rows(), 3); // one row given to the bar
         click(&mut p, text_w - 1, 3);
         assert_eq!(p.left, 1, "the right arrow advances one column");
+    }
+
+    // --- Scroll-bar thumb dragging via generic mouse capture (ADR 0027) ---
+
+    #[test]
+    fn dragging_the_vertical_bars_thumb_scrolls_to_the_pos_at_target() {
+        let body = vec![Block::Preformatted(
+            (0..20).map(|i| format!("line {i}")).collect(),
+        )];
+        let mut p = pane(12, 5, body);
+        assert!(p.needs_vbar);
+        let text_w = p.text_w(); // 11 (one column stolen for the bar)
+
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        // Thumb at scroll pos 0 sits one row under the up arrow (row 1).
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(text_w, 1),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(p.handle_event(&down, &mut ctx), EventResult::Consumed);
+        assert_eq!(p.top, 0, "anchors only, no scroll yet");
+        assert!(
+            ctx.take_mouse_capture_request(),
+            "asks Desktop to keep delivering events regardless of position"
+        );
+
+        let drag = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(text_w, 2),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(p.handle_event(&drag, &mut ctx), EventResult::Consumed);
+        assert_eq!(p.top, 8);
+
+        let up = Event::Mouse(MouseEvent {
+            kind: MouseKind::Up(MouseButton::Left),
+            pos: Point::new(text_w, 2),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(p.handle_event(&up, &mut ctx), EventResult::Consumed);
+
+        let stray = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(text_w, 4),
+            modifiers: Modifiers::NONE,
+        });
+        p.handle_event(&stray, &mut ctx);
+        assert_eq!(p.top, 8, "no further scroll after Up");
+    }
+
+    #[test]
+    fn dragging_the_horizontal_bars_thumb_scrolls_to_the_pos_at_target() {
+        let body = vec![Block::Preformatted(vec!["0123456789ABCDEFGHIJ".into()])];
+        let mut p = pane(8, 4, body);
+        assert!(p.needs_hbar);
+        let bar_row = p.text_rows() as i16; // 3, the bar's own row
+
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        // Thumb at scroll pos 0 sits one column right of the left arrow.
+        let down = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(1, bar_row),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(p.handle_event(&down, &mut ctx), EventResult::Consumed);
+        assert_eq!(p.left, 0, "anchors only, no scroll yet");
+        assert!(
+            ctx.take_mouse_capture_request(),
+            "asks Desktop to keep delivering events regardless of position"
+        );
+
+        let drag = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(4, bar_row),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(p.handle_event(&drag, &mut ctx), EventResult::Consumed);
+        assert_eq!(p.left, 7);
+
+        let up = Event::Mouse(MouseEvent {
+            kind: MouseKind::Up(MouseButton::Left),
+            pos: Point::new(4, bar_row),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(p.handle_event(&up, &mut ctx), EventResult::Consumed);
+
+        let stray = Event::Mouse(MouseEvent {
+            kind: MouseKind::Drag(MouseButton::Left),
+            pos: Point::new(6, bar_row),
+            modifiers: Modifiers::NONE,
+        });
+        p.handle_event(&stray, &mut ctx);
+        assert_eq!(p.left, 7, "no further scroll after Up");
     }
 
     #[test]

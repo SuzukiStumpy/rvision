@@ -164,6 +164,9 @@ pub struct Context<'a> {
     /// screen's own top level.
     offset: Point,
     context_menu_request: Option<ContextMenuRequest>,
+    /// Set by [`request_mouse_capture`](Self::request_mouse_capture); drained
+    /// by [`take_mouse_capture_request`](Self::take_mouse_capture_request).
+    capture_requested: bool,
 }
 
 impl<'a> Context<'a> {
@@ -174,6 +177,7 @@ impl<'a> Context<'a> {
             commands,
             offset: Point::default(),
             context_menu_request: None,
+            capture_requested: false,
         }
     }
 
@@ -249,6 +253,24 @@ impl<'a> Context<'a> {
     /// Takes the pending context-menu request, if any, leaving it clear.
     pub fn take_context_menu_request(&mut self) -> Option<ContextMenuRequest> {
         self.context_menu_request.take()
+    }
+
+    /// Asks whoever ultimately owns positional mouse dispatch (`Desktop`) to
+    /// keep forwarding every subsequent mouse event straight to the window
+    /// this call originated in, regardless of where the pointer moves, until
+    /// the button is released — a scroll-bar thumb drag's use case, phrased
+    /// generically (not `ScrollBar`-specific) so any future continuous-drag
+    /// interaction can reuse it without `Desktop` needing to know it exists.
+    /// Mirrors [`open_context_menu`](Self::open_context_menu)'s "child asks
+    /// owner for something it can't do itself" idiom (ADR 0019); simpler,
+    /// since no position needs resolving through [`translated`](Self::translated).
+    pub fn request_mouse_capture(&mut self) {
+        self.capture_requested = true;
+    }
+
+    /// Takes the pending capture request, if any, leaving it clear.
+    pub fn take_mouse_capture_request(&mut self) -> bool {
+        std::mem::take(&mut self.capture_requested)
     }
 }
 
@@ -1306,6 +1328,19 @@ mod tests {
         ctx.open_context_menu(probe_menu(), Point::new(9, 9));
         let req = ctx.take_context_menu_request().unwrap();
         assert_eq!(req.at, Point::new(9, 9), "the later request wins");
+    }
+
+    #[test]
+    fn request_mouse_capture_sets_a_flag_take_clears_it() {
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert!(!ctx.take_mouse_capture_request(), "none requested yet");
+        ctx.request_mouse_capture();
+        assert!(ctx.take_mouse_capture_request(), "a request was made");
+        assert!(
+            !ctx.take_mouse_capture_request(),
+            "taking clears the pending request"
+        );
     }
 
     #[test]

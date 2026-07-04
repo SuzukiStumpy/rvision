@@ -87,6 +87,7 @@ impl Window {
     // Runtime mutation (existing style: plain setters).
     pub fn set_active(&mut self, active: bool);         // unchanged
     pub fn set_casts_shadow(&mut self, casts: bool);     // unchanged
+    pub fn set_title(&mut self, title: &str);           // forwards to Frame::set_title; cosmetic only
     pub fn set_bounds(&mut self, bounds: Rect);          // drag/resize; propagates to the interior (ADR 0017)
     pub fn hide(&mut self);
     pub fn show(&mut self);
