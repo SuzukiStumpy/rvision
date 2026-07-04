@@ -36,6 +36,14 @@
 //!   [`HelpPane`](crate::widgets::HelpPane) jumps to when the link is
 //!   activated (ADR 0020).
 //! - Topic order is declaration order; the first topic is the home topic.
+//! - `\` escapes the format's own special characters (ADR 0029): `\@`,
+//!   `\<`, `\#` at the start of a line show that marker literally instead of
+//!   opening a topic, fencing a `<pre>` block, or starting a comment; `\{`
+//!   does the same for a link anywhere in a paragraph; `\\` is a literal
+//!   `\`. A backslash before anything else is left alone, so ordinary
+//!   content with no need to escape anything (e.g. a Windows path) is
+//!   unaffected. `<pre>` content is never escape-processed — it stays
+//!   byte-for-byte, exactly as authored.
 
 /// One inline unit of a paragraph's text: plain prose or a followable link
 /// (ADR 0013's `{label|target}` syntax, realized by ADR 0020).
@@ -98,32 +106,22 @@ impl HelpContents {
     /// the next `@topic` or end-of-input). Authoring mistakes — duplicate ids,
     /// dangling link targets — are caught by a content test, not a runtime error.
     pub fn parse(source: &str) -> Self {
+        let lines: Vec<&str> = source
+            .split('\n')
+            .map(|raw| raw.strip_suffix('\r').unwrap_or(raw))
+            .collect();
+
         let mut topics: Vec<HelpTopic> = Vec::new();
         let mut current: Option<HelpTopic> = None;
         let mut paragraph: Vec<String> = Vec::new();
-        let mut pre: Option<Vec<String>> = None;
 
-        for raw in source.split('\n') {
-            let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let mut i = 0;
+        while i < lines.len() {
+            let line = lines[i];
             let trimmed = line.trim_start();
-            let is_topic = topic_header(trimmed).is_some();
-
-            // Inside a <pre> block, everything is verbatim until </pre>; an
-            // unclosed block also ends at the next @topic or end-of-input.
-            if pre.is_some() {
-                if line.trim() == "</pre>" {
-                    flush_pre(&mut current, &mut pre);
-                    continue;
-                } else if is_topic {
-                    flush_pre(&mut current, &mut pre);
-                    // fall through to handle the @topic line below
-                } else {
-                    pre.as_mut().expect("pre is Some").push(line.to_string());
-                    continue;
-                }
-            }
 
             if trimmed.starts_with('#') {
+                i += 1;
                 continue; // comment
             }
 
@@ -137,27 +135,35 @@ impl HelpContents {
                     title: title.to_string(),
                     body: Vec::new(),
                 });
+                i += 1;
                 continue;
             }
 
             if line.trim() == "<pre>" {
                 flush_paragraph(&mut current, &mut paragraph);
-                pre = Some(Vec::new());
+                let (end, next) = find_pre_end(&lines, i + 1);
+                let content: Vec<String> =
+                    lines[i + 1..end].iter().map(|s| s.to_string()).collect();
+                if let Some(t) = current.as_mut() {
+                    t.body.push(Block::Preformatted(content));
+                }
+                i = next;
                 continue;
             }
 
             if trimmed.is_empty() {
                 flush_paragraph(&mut current, &mut paragraph);
+                i += 1;
                 continue;
             }
 
             // Ordinary prose — only meaningful inside a topic.
             if current.is_some() {
-                paragraph.push(line.trim().to_string());
+                paragraph.push(strip_leading_escape(line.trim()).to_string());
             }
+            i += 1;
         }
 
-        flush_pre(&mut current, &mut pre);
         flush_paragraph(&mut current, &mut paragraph);
         if let Some(t) = current.take() {
             topics.push(t);
@@ -192,6 +198,20 @@ impl HelpContents {
     }
 }
 
+/// Strips one leading `\` from `line` when it immediately precedes `@`,
+/// `<`, or `#` — the only characters with line-start meaning in this format
+/// (ADR 0029). The structural checks in [`HelpContents::parse`] already fail
+/// to match a backslash-prefixed line on their own (the extra leading byte
+/// breaks their exact-prefix/equality tests); this is only what makes the
+/// backslash disappear from the stored text too, so `\@topic id Title`
+/// renders as `@topic id Title` rather than keeping the backslash visible.
+fn strip_leading_escape(line: &str) -> &str {
+    match line.as_bytes() {
+        [b'\\', b'@' | b'<' | b'#', ..] => &line[1..],
+        _ => line,
+    }
+}
+
 /// If `trimmed` is an `@topic <id> <title…>` header, returns `(id, title)`.
 /// The directive must be followed by whitespace (or be the whole line).
 fn topic_header(trimmed: &str) -> Option<(&str, &str)> {
@@ -219,26 +239,89 @@ fn flush_paragraph(current: &mut Option<HelpTopic>, paragraph: &mut Vec<String>)
     }
 }
 
-/// Emits the in-progress `<pre>` block (if any) as a [`Block::Preformatted`].
-fn flush_pre(current: &mut Option<HelpTopic>, pre: &mut Option<Vec<String>>) {
-    if let Some(buf) = pre.take() {
-        if let Some(t) = current.as_mut() {
-            t.body.push(Block::Preformatted(buf));
+/// Finds where a `<pre>` block opened at `lines[start - 1]` actually ends,
+/// scanning forward from `start`. Returns `(content_end, next)`:
+/// `lines[start..content_end]` is the block's verbatim content, and `next`
+/// is where the caller's main loop should resume.
+///
+/// A real `</pre>` always closes the block, however far away — *unless* a
+/// second boundary-shaped line (another `@topic` header, or a bare `<pre>`)
+/// is seen first, in which case the block is treated as genuinely unclosed
+/// and recovers at the *first* boundary-shaped line instead (matching the
+/// original, simpler "runs to the next `@topic` or end-of-input" recovery).
+///
+/// The one-boundary tolerance is what makes an isolated `@topic`-shaped
+/// example line inside an otherwise normal, properly-closed block just
+/// content (a real bug, distinct from ADR 0029's escape syntax — escaping
+/// is a way to author around this, not a substitute for handling
+/// well-formed input correctly) — while still refusing to let one topic's
+/// forgotten `</pre>` reach across a real topic boundary and swallow a
+/// *different*, later topic's own properly-fenced `<pre>` block as if it
+/// belonged to the first.
+fn find_pre_end(lines: &[&str], start: usize) -> (usize, usize) {
+    let mut boundary: Option<usize> = None;
+    for (offset, &raw) in lines[start..].iter().enumerate() {
+        let j = start + offset;
+        if raw.trim() == "</pre>" {
+            return (j, j + 1);
         }
+        let is_boundary = topic_header(raw.trim_start()).is_some() || raw.trim() == "<pre>";
+        if is_boundary {
+            if boundary.is_some() {
+                break; // a second boundary-shaped line: genuinely ambiguous
+            }
+            boundary = Some(j);
+        }
+    }
+    match boundary {
+        Some(b) => (b, b),
+        None => (lines.len(), lines.len()),
     }
 }
 
-/// Splits `s` into [`Span`]s, turning every well-formed `{label|target}` run
-/// into a [`Span::Link`] and leaving everything else as [`Span::Text`]. A `{`
-/// without a following `|…}` is left literal, so the function is total on any
-/// input. Adjacent links with no separating text produce no empty `Text` span
-/// between them (`push_span_text` merges/skips as needed).
+/// Splits `s` into [`Span`]s, turning every well-formed, unescaped
+/// `{label|target}` run into a [`Span::Link`] and leaving everything else as
+/// [`Span::Text`]. A `{` without a following `|…}` is left literal, so the
+/// function is total on any input. Adjacent links with no separating text
+/// produce no empty `Text` span between them (`push_span_text` merges/skips
+/// as needed).
+///
+/// `\{` and `\\` are recognized here too (ADR 0029): unlike the line-start
+/// markers `strip_leading_escape` handles, an unescaped `{` is *always*
+/// eagerly tried as a link, backslash or not, so suppressing that needs to
+/// happen in the same scan that looks for `{` in the first place. Any other
+/// `\x` is left completely untouched — both characters pass through as
+/// ordinary text — so a bare backslash before an unrelated character (e.g. a
+/// Windows path) needs no escaping at all.
 fn parse_spans(s: &str) -> Vec<Span> {
     let mut out = Vec::new();
     let mut rest = s;
-    while let Some(open) = rest.find('{') {
-        push_span_text(&mut out, &rest[..open]);
-        let after = &rest[open + 1..];
+    loop {
+        let Some(idx) = rest.find(['{', '\\']) else {
+            push_span_text(&mut out, rest);
+            break;
+        };
+        push_span_text(&mut out, &rest[..idx]);
+        let tail = &rest[idx..];
+
+        if let Some(after_backslash) = tail.strip_prefix('\\') {
+            match after_backslash.chars().next() {
+                Some(c @ ('{' | '\\')) => {
+                    push_span_text(&mut out, &c.to_string());
+                    rest = &after_backslash[c.len_utf8()..];
+                }
+                _ => {
+                    // Not a recognized escape: the backslash is literal and
+                    // unconsumed; whatever follows is scanned normally next.
+                    push_span_text(&mut out, "\\");
+                    rest = after_backslash;
+                }
+            }
+            continue;
+        }
+
+        // tail starts with an unescaped '{': try to match a real link.
+        let after = &tail[1..];
         if let Some(bar) = after.find('|') {
             let label = &after[..bar];
             let after_bar = &after[bar + 1..];
@@ -254,7 +337,6 @@ fn parse_spans(s: &str) -> Vec<Span> {
         push_span_text(&mut out, "{"); // not a link: keep the brace literal
         rest = after;
     }
-    push_span_text(&mut out, rest);
     out
 }
 
@@ -428,5 +510,111 @@ mod tests {
     fn empty_input_yields_no_topics() {
         assert!(HelpContents::parse("").topics().is_empty());
         assert!(HelpContents::parse("").home().is_none());
+    }
+
+    // --- backslash-escape syntax (ADR 0029) ---
+
+    #[test]
+    fn escaped_topic_marker_renders_as_literal_text() {
+        let c = HelpContents::parse("@topic t  T\n\\@topic id Title");
+        assert_eq!(c.topics().len(), 1);
+        assert_eq!(c.topics()[0].body, vec![para("@topic id Title")]);
+    }
+
+    #[test]
+    fn escaping_an_at_topic_marker_inside_pre_keeps_it_verbatim_without_ending_the_block() {
+        let c = HelpContents::parse("@topic a  A\n<pre>\n\\@topic not a real topic\n</pre>\nafter");
+        assert_eq!(c.topics().len(), 1);
+        assert_eq!(
+            c.topics()[0].body,
+            vec![pre(&["\\@topic not a real topic"]), para("after"),]
+        );
+    }
+
+    #[test]
+    fn escaped_pre_fence_markers_render_as_literal_text() {
+        let c = HelpContents::parse("@topic t  T\n\\<pre>\nprose\n\\</pre>");
+        assert_eq!(c.topics()[0].body, vec![para("<pre> prose </pre>")]);
+    }
+
+    #[test]
+    fn escaped_hash_renders_as_literal_text_not_a_comment() {
+        let c = HelpContents::parse("@topic t  T\n\\#not a comment");
+        assert_eq!(c.topics()[0].body, vec![para("#not a comment")]);
+    }
+
+    #[test]
+    fn escaped_brace_in_a_paragraph_is_literal_not_a_link() {
+        let c = HelpContents::parse("@topic t  T\n\\{label|target}");
+        assert_eq!(
+            c.topics()[0].body,
+            vec![Block::Paragraph(vec![text("{label|target}")])]
+        );
+    }
+
+    #[test]
+    fn double_backslash_is_a_literal_backslash() {
+        let c = HelpContents::parse("@topic t  T\nUse \\\\ for one.");
+        assert_eq!(
+            c.topics()[0].body,
+            vec![Block::Paragraph(vec![text("Use \\ for one.")])]
+        );
+    }
+
+    #[test]
+    fn an_unrecognized_backslash_is_left_literal() {
+        // Mirrors `edit`'s real shipped content (a Windows config path) —
+        // only `@`, `<`, `#`, `{`, `\` are ever escape-significant, so a bare
+        // backslash before an ordinary letter needs no migration.
+        let c = HelpContents::parse("@topic t  T\n%APPDATA%\\edit\\config");
+        assert_eq!(
+            c.topics()[0].body,
+            vec![Block::Paragraph(vec![text("%APPDATA%\\edit\\config")])]
+        );
+    }
+
+    // --- a properly-closed `<pre>` block is never split by content that
+    // merely *looks* like a topic header (a real bug, distinct from the
+    // escape syntax above: escaping is a way to *author around* this, not a
+    // substitute for the parser doing the right thing with a well-formed,
+    // explicitly-closed block) ---
+
+    #[test]
+    fn an_at_topic_shaped_line_inside_a_properly_closed_pre_block_stays_verbatim() {
+        let c = HelpContents::parse("@topic t  T\n<pre>\n     @topic id title\n</pre>\nafter");
+        assert_eq!(c.topics().len(), 1, "must not split into a second topic");
+        assert_eq!(
+            c.topics()[0].body,
+            vec![pre(&["     @topic id title"]), para("after")]
+        );
+    }
+
+    #[test]
+    fn a_pre_block_closes_normally_even_with_plain_content_after_the_topic_shaped_line() {
+        let c =
+            HelpContents::parse("@topic t  T\n<pre>\n@topic id title\nmore content\n</pre>\nafter");
+        assert_eq!(c.topics().len(), 1);
+        assert_eq!(
+            c.topics()[0].body,
+            vec![pre(&["@topic id title", "more content"]), para("after"),]
+        );
+    }
+
+    #[test]
+    fn a_genuinely_unclosed_pre_still_recovers_at_the_next_real_topic() {
+        // Regression guard: a topic-shaped line followed by a *second*
+        // boundary-shaped line (here, another `<pre>`, belonging to the next
+        // topic) before any `</pre>` must not be mistaken for a single,
+        // still-open block spanning both topics — the original "recover at
+        // the first topic-shaped line" behaviour must still apply.
+        let c = HelpContents::parse(
+            "@topic a  A\n<pre>\nverbatim-a\n@topic b  B\nsome prose\n<pre>\nverbatim-b\n</pre>\nmore prose",
+        );
+        assert_eq!(c.topics().len(), 2);
+        assert_eq!(c.topics()[0].body, vec![pre(&["verbatim-a"])]);
+        assert_eq!(
+            c.topics()[1].body,
+            vec![para("some prose"), pre(&["verbatim-b"]), para("more prose"),]
+        );
     }
 }

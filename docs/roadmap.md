@@ -307,6 +307,27 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      deliberately does *not* auto-refresh the preview, keeping Refresh the
      one explicit "reflect the source now" action everywhere, not just after
      typing.
+   - Follow-up 2026-07-04: authoring `examples/help_builder.help` (a usage
+     guide for the tool itself) surfaced a real gap in the *format*, not
+     just the example — no way to show `@topic`/`<pre>`/`{label|target}`
+     literally. Landed a backslash-escape syntax in the core parser
+     (`src/help.rs`, ADR 0029): `\@`/`\<`/`\#` at line start and `\{`/`\\`
+     inline, everything else left untouched, `<pre>` content never
+     escape-processed. Flagged but explicitly deferred, larger scope: a
+     Markdown-style code-span/code-block syntax (single backtick inline,
+     triple-backtick multi-line) — not designed or scheduled.
+   - Follow-up 2026-07-04: manual testing right after the above surfaced a
+     real parser bug, not just a missing escape — a `<pre>` block that *is*
+     properly closed a line or two later was still splitting into two
+     topics because an `@topic`-shaped line inside it ended the block early
+     regardless of the real close sitting right there. Fixed in
+     `HelpContents::parse` (`src/help.rs`, ADR 0029's addendum): `<pre>` now
+     scans forward for its own `</pre>`, however far away, tolerating one
+     topic-shaped (or bare `<pre>`) line along the way before falling back
+     to the original "genuinely unclosed, recover at the next real topic"
+     behaviour — which a new regression test locks in, so a topic that
+     forgets its own close still can't reach across and swallow a *later*
+     topic's own well-formed `<pre>` block.
 4. **Python bindings.** Write `rvision` applications with Python as the
    application layer calling into the library.
 5. **TypeScript/JavaScript bindings.** Similar goal to the Python bindings;

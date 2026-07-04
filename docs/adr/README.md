@@ -41,5 +41,6 @@ workspace from the start, so it kept its original number unchanged.
 | [0026](0026-theme-editor-desktop-composition.md) | Theme editor: `Desktop`-hosted composition via bubbled commands and a read/write handle |
 | [0027](0027-mouse-capture-for-drag-interactions.md) | Generic mouse capture (`Context`/`Desktop`) for continuous drag interactions, e.g. scroll-bar thumbs |
 | [0028](0028-global-keyboard-accelerator-table.md) | Global keyboard accelerator table (`Desktop`), unified with `StatusLine`'s hints |
+| [0029](0029-help-format-escape-syntax.md) | Backslash-escape syntax for the `.help` format: `\@`/`\<`/`\#`/`\{`/`\\`, `<pre>` content untouched |
 
 New decision? Copy [`0000-template.md`](0000-template.md).
