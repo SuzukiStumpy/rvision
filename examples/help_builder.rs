@@ -28,6 +28,13 @@
 //!   edits, clearing on save (or a fresh Open), the same convention `edit`
 //!   (the editor this framework was extracted from) uses for dirty files.
 //! - `Alt-X` / File ▸ Exit quits (no unsaved-changes prompt).
+//! - A permanent "Guide" window sits in Preview's bottom-right corner: this
+//!   tool's own usage guide plus a primer on the `.help` format, baked in
+//!   with `include_str!` the same way `edit`'s built-in help is
+//!   (`crates/edit/src/help.rs`). It has no close glyph and no menu entry —
+//!   it isn't something to open or dismiss, just always there — but it's
+//!   still a plain moveable `Window`, so drag its title bar aside if it's
+//!   covering Preview content underneath.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -58,6 +65,11 @@ const CM_SAVE: Command = Command(CM_USER + 1);
 const CM_SAVE_AS: Command = Command(CM_USER + 2);
 const CM_REFRESH: Command = Command(CM_USER + 3);
 const CM_OPEN: Command = Command(CM_USER + 4);
+
+/// This tool's own usage guide and `.help`-format primer, baked into the
+/// permanent Guide window — the same `include_str!` convention `edit` uses
+/// for its own built-in help (`crates/edit/src/help.rs`'s `HELP_TEXT`).
+const GUIDE_TEXT: &str = include_str!("help_builder.help");
 
 fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
     Rect::from_origin_size(Point::new(x, y), Size::new(w, h))
@@ -373,7 +385,7 @@ fn main() -> io::Result<()> {
     let right_w = desk_w - left_w;
 
     let source_bounds = rect(0, 0, left_w, desk_h);
-    let preview_area = rect(left_w, 0, right_w, desk_h);
+    let preview_area = rect(left_w, 0, right_w, (desk_h / 2).max(14));
 
     // The interior view must be sized to the window's *interior* — inset by
     // one cell on every side for the border — not the outer bounds (the same
@@ -407,9 +419,34 @@ fn main() -> io::Result<()> {
     let preview_window =
         HelpWindow::build(contents, preview_area, "Preview", &theme).closable(false);
     let preview_id = desktop.open(preview_window);
+
+    // A permanent reference window: this tool's own usage guide plus a
+    // primer on the `.help` format it authors (ADR 0013) — baked in the same
+    // way `edit`'s own built-in help is (`crates/edit/src/help.rs`). No menu
+    // entry and no F1 wiring (`Shell::with_help`'s singleton, ADR 0021, is
+    // opt-in and this example never calls it) — it's just always there.
+    // `guide_area`'s x-origin stays within the right half's own column range
+    // (clamped to `right_w`), so on a narrow terminal it shrinks rather than
+    // ever creeping into Source's column.
+    let guide_w = desk_w - left_w;
+    let guide_h = (desk_h / 2).max(14);
+    let guide_area = rect(
+        left_w + (right_w - guide_w).max(0),
+        (desk_h - guide_h).max(0),
+        guide_w,
+        guide_h,
+    );
+    let guide_window =
+        HelpWindow::build(HelpContents::parse(GUIDE_TEXT), guide_area, "Guide", &theme)
+            .closable(false);
+    desktop.open(guide_window);
+
     // `Desktop::open` makes the newly opened window active — without this,
-    // the Preview window (opened last) would steal keyboard focus from the
-    // source `TextArea`, even though it's individually `set_focused(true)`.
+    // the Preview/Guide windows (opened last) would steal keyboard focus
+    // from the source `TextArea`, even though it's individually
+    // `set_focused(true)`. Focusing Source last also raises it to the top,
+    // over Preview and Guide, while leaving Guide (opened after Preview)
+    // above Preview in their shared corner.
     desktop.focus(source_id);
 
     let status = StatusLine::new(
@@ -484,4 +521,119 @@ fn main() -> io::Result<()> {
         None => println!("Not saved."),
     }
     Ok(())
+}
+
+// --- the shipped Guide content (a compile-in safety net, ADR 0013) ---
+//
+// Mirrors `edit`'s own shipped-content tests
+// (`crates/edit/src/help.rs`), adapted to this crate's current
+// `Block::Paragraph(Vec<Span>)` model (`edit`'s copy predates ADR 0020's
+// `Span`-based links and assumes a bare `String`).
+
+#[cfg(test)]
+mod guide_content {
+    use super::GUIDE_TEXT;
+    use rvision::help::{Block, HelpContents, HelpTopic, Span};
+
+    fn topic_text(t: &HelpTopic) -> String {
+        let mut s = String::new();
+        for block in &t.body {
+            match block {
+                Block::Paragraph(spans) => {
+                    for span in spans {
+                        match span {
+                            Span::Text(text) => s.push_str(text),
+                            Span::Link { label, .. } => s.push_str(label),
+                        }
+                    }
+                    s.push('\n');
+                }
+                Block::Preformatted(lines) => {
+                    for l in lines {
+                        s.push_str(l);
+                        s.push('\n');
+                    }
+                }
+            }
+        }
+        s
+    }
+
+    /// Extracts every `{label|target}` target from raw markup (links are
+    /// reduced to label text at parse time, so this scans the source) —
+    /// skipping `<pre>`-fenced lines, since the real parser never
+    /// link-scans those either (this Guide's own "links" topic shows the
+    /// `{label|target}` syntax literally inside one, which isn't a real
+    /// link to check).
+    fn link_targets(src: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut in_pre = false;
+        for line in src.split('\n') {
+            let trimmed = line.trim();
+            if trimmed == "<pre>" {
+                in_pre = true;
+                continue;
+            }
+            if trimmed == "</pre>" {
+                in_pre = false;
+                continue;
+            }
+            if in_pre {
+                continue;
+            }
+            let mut rest = line;
+            while let Some(o) = rest.find('{') {
+                let after = &rest[o + 1..];
+                if let Some(bar) = after.find('|') {
+                    let ab = &after[bar + 1..];
+                    if let Some(close) = ab.find('}') {
+                        out.push(ab[..close].to_string());
+                        rest = &ab[close + 1..];
+                        continue;
+                    }
+                }
+                rest = after;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn guide_parses_with_the_expected_topics() {
+        let c = HelpContents::parse(GUIDE_TEXT);
+        let ids: Vec<&str> = c.topics().iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["overview", "usage", "format", "preformatted", "links"]
+        );
+    }
+
+    #[test]
+    fn guide_topic_ids_are_unique() {
+        let c = HelpContents::parse(GUIDE_TEXT);
+        let mut seen = std::collections::BTreeSet::new();
+        for t in c.topics() {
+            assert!(seen.insert(t.id.clone()), "duplicate topic id {:?}", t.id);
+        }
+    }
+
+    #[test]
+    fn usage_topic_documents_the_shortcuts() {
+        let c = HelpContents::parse(GUIDE_TEXT);
+        let text = topic_text(c.topic("usage").expect("a usage topic"));
+        for key in ["Ctrl-O", "Ctrl-S", "Ctrl-A", "Ctrl-R", "Alt-X"] {
+            assert!(text.contains(key), "{key} documented");
+        }
+    }
+
+    #[test]
+    fn every_link_target_resolves() {
+        let c = HelpContents::parse(GUIDE_TEXT);
+        for target in link_targets(GUIDE_TEXT) {
+            assert!(
+                c.topic(&target).is_some(),
+                "dangling help link target {target:?}"
+            );
+        }
+    }
 }

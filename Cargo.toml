@@ -17,6 +17,13 @@ crossterm = "0.28"                # CrosstermBackend (ADR 0001)
 [dev-dependencies]
 insta = "1"                       # snapshot render tests
 
+# Explicit so its compiled-in Guide content gets a content test (ADR 0013)
+# under plain `cargo test` — examples default to `test = false` (built only
+# "to ensure they compile"); this one's #[cfg(test)] mod actually runs.
+[[example]]
+name = "help_builder"
+test = true
+
 [profile.release]
 opt-level = 3
 lto = "thin"

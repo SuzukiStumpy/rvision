@@ -1,0 +1,45 @@
+# This tool's own usage guide, plus a primer on the ADR 0013 .help format it
+# authors. Hand-authored markup, compiled into the Guide window with
+# include_str! (see examples/help_builder.rs) — the same way edit's built-in
+# help is (crates/edit/src/help.rs's HELP_TEXT/help.txt). Comments like this
+# one, and everything before the first @topic, are dropped by the parser.
+
+@topic overview  Overview
+
+This tool authors .help files: markup source in the Source window on the left, a live rendered preview on the right, and this window for reference while you write. See {Using This Tool|usage} for the keys, or {The .help Format|format} for the markup itself.
+
+@topic usage  Using This Tool
+
+<pre>
+Ctrl-O   Open a file
+Ctrl-S   Save
+Ctrl-A   Save As...
+Ctrl-R   Refresh Preview
+Alt-X    Exit
+</pre>
+
+Refresh Preview is a deliberate, separate step: the preview never updates on every keystroke, so a half-typed link is never shown broken mid-edit. The Source window's title grows a trailing * while there are unsaved changes, and clears again on save.
+
+@topic format  The .help Format
+
+A topic starts with a line like 
+
+\@topic id Title
+
+Where id is the first word and everything after it is the title shown in this window's list. Everything up to the next @topic line is that topic's body.
+
+A blank line starts a new paragraph; single newlines inside one don't matter, since this pane reflows every paragraph to fit its own width. See {Preformatted|preformatted} for content that must keep its exact spacing, and {Links|links} for cross-references like the ones on this page. A comment line begins with a hash character and is dropped, wherever it appears.
+
+To escape special sequences (such at @topic at the start of a line or a link anywhere within the text, precede the leading character with a backslash - eg: \@topic) this will prevent the parser from interpreting that sequence and flow it as regular text instead.
+
+@topic preformatted  Preformatted
+
+Wrap verbatim rows in a line containing only <pre>, then your rows, then a line containing only </pre> — kept byte-for-byte, unlike a paragraph, which reflows and collapses whitespace. Use it for anything that depends on alignment, like the keys table on {Using This Tool|usage}.
+
+@topic links  Links
+
+Curly braces make a followable link: the label is shown, and selecting it — click it, or Tab to this pane and press Enter — jumps to its target topic.
+
+\{label|target-topic-id}
+
+The target is another topic's id, not its title. Every link on this page is a real one; try following {this one|overview} back to the start.
