@@ -1,6 +1,6 @@
 ---
 source: src/widgets/file_dialog.rs
-assertion_line: 809
+assertion_line: 1103
 expression: buf.to_text()
 ---
 ┌─────────────────── Open ───────────────────┐
@@ -18,6 +18,6 @@ expression: buf.to_text()
 │                                            │
 │                                            │
 │                                            │
-│                                            │
+│/root                                       │
 │                       Open       Cancel    │
 └────────────────────────────────────────────┘

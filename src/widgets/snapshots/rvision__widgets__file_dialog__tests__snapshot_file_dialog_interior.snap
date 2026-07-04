@@ -1,6 +1,6 @@
 ---
 source: src/widgets/file_dialog.rs
-assertion_line: 682
+assertion_line: 812
 expression: buf.to_text()
 ---
 Name:                                       
@@ -17,5 +17,5 @@ b.txt
                                             
                                             
                                             
-                                            
+/root                                       
                        Open       Cancel

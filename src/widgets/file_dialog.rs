@@ -25,6 +25,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
 use crate::canvas::Canvas;
 use crate::command::{CM_CANCEL, CM_OK};
 use crate::event::{Event, EventResult, KeyCode, KeyEvent, MouseButton, MouseEvent, MouseKind};
@@ -473,6 +475,58 @@ fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
     Rect::from_origin_size(Point::new(x, y), Size::new(w, h))
 }
 
+/// Elides `path` to fit `max_width` display columns, so the CWD label stays
+/// readable without pushing the dialog wider: unchanged if it already fits,
+/// otherwise a genuine prefix of `path` (the root), an `"..."` marker placed
+/// about a third of the way across the budget, then a genuine suffix of
+/// `path` (so the current directory's own name — the last component — always
+/// stays visible, even under a tight budget).
+fn elide_path_for_display(path: &str, max_width: usize) -> String {
+    if path.width() <= max_width {
+        return path.to_string();
+    }
+    const ELLIPSIS: &str = "...";
+    let ellipsis_w = ELLIPSIS.width();
+    if max_width <= ellipsis_w {
+        return take_prefix(path, max_width);
+    }
+    let head_budget = (max_width - ellipsis_w) / 3;
+    let tail_budget = max_width - ellipsis_w - head_budget;
+    let head = take_prefix(path, head_budget);
+    let tail = take_suffix(path, tail_budget);
+    format!("{head}{ELLIPSIS}{tail}")
+}
+
+/// The longest prefix of `s` whose display width doesn't exceed `budget`.
+fn take_prefix(s: &str, budget: usize) -> String {
+    let mut out = String::new();
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > budget {
+            break;
+        }
+        w += cw;
+        out.push(c);
+    }
+    out
+}
+
+/// The longest suffix of `s` whose display width doesn't exceed `budget`.
+fn take_suffix(s: &str, budget: usize) -> String {
+    let mut out = String::new();
+    let mut w = 0;
+    for c in s.chars().rev() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > budget {
+            break;
+        }
+        w += cw;
+        out.insert(0, c);
+    }
+    out
+}
+
 impl View for FileDialog {
     fn bounds(&self) -> Rect {
         Rect::from_origin_size(Point::new(0, 0), Size::new(WIDTH, HEIGHT))
@@ -487,6 +541,14 @@ impl View for FileDialog {
         canvas.put_str(
             Point::new(0, 3),
             "Files:",
+            self.theme.style(Role::DialogBackground),
+        );
+        // The current directory, so navigation isn't blind (elided to fit —
+        // see `elide_path_for_display`) — drawn in the row the list's own
+        // layout already leaves spare, just above the buttons.
+        canvas.put_str(
+            Point::new(0, HEIGHT - 2),
+            &elide_path_for_display(&self.dir.to_string_lossy(), WIDTH as usize),
             self.theme.style(Role::DialogBackground),
         );
         for control in [&self.input as &dyn View, &self.open, &self.cancel] {
@@ -916,6 +978,68 @@ mod tests {
         assert_eq!(d.list.selected(), Some(5));
         assert_eq!(ctx.take_posted(), vec![Event::Command(CM_OK)]);
         assert_eq!(d.path(), PathBuf::from("/many/f04.txt"));
+    }
+
+    // --- The CWD label (elided path display) ---
+
+    #[test]
+    fn elide_path_for_display_returns_a_short_path_unchanged() {
+        assert_eq!(elide_path_for_display("/root/sub", 44), "/root/sub");
+    }
+
+    #[test]
+    fn elide_path_for_display_returns_the_path_unchanged_at_exactly_the_width() {
+        let path = "a".repeat(20);
+        assert_eq!(elide_path_for_display(&path, 20), path);
+    }
+
+    #[test]
+    fn elide_path_for_display_elides_a_long_path_keeping_root_and_tail() {
+        let path = "/home/user/very/long/nested/directory/structure/cwd";
+        let out = elide_path_for_display(path, 30);
+        assert!(out.len() <= 30, "fits the budget: {out:?}");
+        assert!(out.contains("..."), "marks the elision: {out:?}");
+        assert!(
+            path.starts_with(out.split("...").next().unwrap()),
+            "the head is a genuine prefix of the path (shows the root): {out:?}"
+        );
+        assert!(
+            out.ends_with("cwd"),
+            "the tail keeps the final component (the CWD itself): {out:?}"
+        );
+        // The ellipsis lands within the first third of the *displayed*
+        // budget, not the middle or the end — most of the width goes to the
+        // tail, so the CWD stays legible even under a tight budget.
+        let ellipsis_at = out.find("...").unwrap();
+        assert!(ellipsis_at <= 30 / 3, "ellipsis starts early: {out:?}");
+    }
+
+    #[test]
+    fn elide_path_for_display_never_exceeds_the_budget_even_when_tiny() {
+        let path = "/home/user/very/long/nested/directory/structure/cwd";
+        for width in 0..8 {
+            let out = elide_path_for_display(path, width);
+            assert!(
+                out.width() <= width,
+                "width {width}: {out:?} is {} wide",
+                out.width()
+            );
+        }
+    }
+
+    #[test]
+    fn draws_the_cwd_label_below_the_files_list() {
+        let d = dialog(); // /root
+        let mut buf = Buffer::new(d.bounds().size());
+        let mut canvas = Canvas::new(&mut buf);
+        d.draw(&mut canvas);
+        let row = buf
+            .to_text()
+            .lines()
+            .nth((HEIGHT - 2) as usize)
+            .unwrap()
+            .to_string();
+        assert_eq!(row.trim_end(), "/root");
     }
 
     // --- The assembled Window (ADR 0016): chrome, ending, Esc ---

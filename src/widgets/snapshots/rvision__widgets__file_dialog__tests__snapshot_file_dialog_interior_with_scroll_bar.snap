@@ -1,6 +1,6 @@
 ---
 source: src/widgets/file_dialog.rs
-assertion_line: 708
+assertion_line: 838
 expression: buf.to_text()
 ---
 Name:                                       
@@ -17,5 +17,5 @@ f05.txt                                    ▒
 f06.txt                                    ▒
 f07.txt                                    ▒
 f08.txt                                    ▼
-                                            
+/many                                       
                        Open       Cancel
