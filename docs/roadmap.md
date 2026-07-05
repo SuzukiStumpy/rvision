@@ -633,7 +633,7 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      caret's attribute now follows the mode, underline for insert and the
      original reverse-video block for overtype, matching a real terminal
      cursor's block-vs-bar convention.
-8. **End-user/developer documentation.** Possibly a GitHub wiki.
+8. ~~**End-user/developer documentation.** Possibly a GitHub wiki.~~
    - Scoped 2026-07-03: narrower than first framed. The developer half is
      already largely covered — crate-level rustdoc (`src/lib.rs`) carries
      an architecture-at-a-glance overview, and `docs/adr`/`docs/specs`/
@@ -650,6 +650,17 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      under "crates.io publishing," which already names "a documentation
      pass" as part of that remaining gap; the two should merge into one
      line item once either is actually scheduled.
+   - ~~Getting-started tutorial, landed 2026-07-05.~~
+     [`docs/getting-started.md`](../docs/getting-started.md) — the
+     zero-to-running tour scoped above: a bare `Program`/`Application` loop
+     (narrating `examples/hello.rs`), then the `View`/`Canvas`/`Group` tree
+     (`examples/hello2.rs`), then `Shell`/`Desktop` chrome and a modal
+     dialog via `exec_view`/`Window::dialog` (`examples/chrome.rs`,
+     `examples/dialogs.rs`), closing with pointers into `docs/adr/`,
+     `docs/specs/`, and the full `examples/` set. Signposted from the
+     README's "Where to start reading" section rather than left to be
+     found. The API-reference half remains gated on crates.io publishing,
+     as already tracked above.
 9. **Generic resource loader.** Raised 2026-07-03 while scoping #1: themes
    and help content (ADR 0013) both want to move from Rust-embedded data
    (`include_str!` etc.) to files loaded at runtime, layered

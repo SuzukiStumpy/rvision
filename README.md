@@ -16,6 +16,7 @@ editor once it needed a life of its own.
 src/            the framework
 examples/       manual-verification demos (`cargo run --example <name>`)
 docs/
+  getting-started.md   quickstart for building on rvision
   adr/          architecture decision records
   specs/        one spec per module
   module-spec-template.md
@@ -34,7 +35,11 @@ edition). If you don't have Rust, install it via [rustup](https://rustup.rs).
 
 ## Where to start reading
 
-`docs/adr/` for *why* each major design decision was made, one numbered
+New to `rvision`? [`docs/getting-started.md`](docs/getting-started.md) walks
+through building an application on it, from a bare event loop up to a
+`Shell`/`Desktop` with a modal dialog.
+
+For the *why* behind each major design decision, `docs/adr/`, one numbered
 record per decision. `CLAUDE.md` holds the working conventions.
 
 ## License
