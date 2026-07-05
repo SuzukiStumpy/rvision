@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.2](https://github.com/SuzukiStumpy/rvision/compare/v2.0.1...v2.0.2) (2026-07-05)
+
+
+### Bug Fixes
+
+* sync FileDialog's result handle when Open/Save ends via mouse or Space ([70a03d0](https://github.com/SuzukiStumpy/rvision/commit/70a03d0e956f7f5b04a24fda682fd5981d996e8b))
+
 ## [2.0.1](https://github.com/SuzukiStumpy/rvision/compare/v2.0.0...v2.0.1) (2026-07-05)
 
 
