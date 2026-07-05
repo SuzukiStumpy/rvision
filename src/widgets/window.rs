@@ -31,7 +31,7 @@ use crate::geometry::{Point, Rect, Size};
 use crate::theme::{Role, Theme};
 use crate::view::{Context, View};
 
-use super::{Frame, ScrollBar, ScrollPart};
+use super::{Frame, ScrollBar, ScrollPart, StatusPanel};
 
 /// Where [`exec_view`](crate::app::Application::exec_view) (or [`Desktop::open`](super::Desktop::open))
 /// positions a window at the start of its run.
@@ -58,6 +58,9 @@ pub struct Window {
     moveable: bool,
     closable: bool,
     zoomable: bool,
+    /// Whether to draw a hosted [`StatusPanel`] on the bottom border, left of
+    /// any horizontal scroll bar (ADR 0032). Default `false`.
+    status_panel: bool,
     /// The opaque `HelpContents` topic id this window's help glyph/`F1`
     /// targets, if any (ADR 0021) — `None` means no help glyph is drawn and
     /// `F1` falls back to the home topic.
@@ -131,6 +134,7 @@ impl Window {
             moveable: true,
             closable: true,
             zoomable: true,
+            status_panel: false,
             help_topic: None,
             placement: Placement::Positioned,
             ending: Vec::new(),
@@ -173,6 +177,16 @@ impl Window {
     pub fn zoomable(mut self, yes: bool) -> Self {
         self.zoomable = yes;
         self.frame.set_zoomable(yes);
+        self
+    }
+
+    /// Sets whether this window draws a hosted [`StatusPanel`] on its own
+    /// bottom border, left of any horizontal scroll bar — which shrinks to
+    /// make room (ADR 0032). Default `false`. The panel only actually
+    /// appears once the interior also has [`View::status_text`] to show;
+    /// enabling this with an interior that never does is a no-op.
+    pub fn status_panel(mut self, yes: bool) -> Self {
+        self.status_panel = yes;
         self
     }
 
@@ -384,22 +398,61 @@ impl Window {
     }
 
     /// The scroll bar hosting the interior's horizontal overflow, mirroring
-    /// [`vertical_scroll_bar`](Self::vertical_scroll_bar) along the bottom border.
+    /// [`vertical_scroll_bar`](Self::vertical_scroll_bar) along the bottom
+    /// border — shrunk and shifted right by [`status_panel_rect`](Self::status_panel_rect)'s
+    /// width when a hosted `StatusPanel` claims the left end of that same
+    /// border (ADR 0032).
     fn horizontal_scroll_bar(&self) -> Option<ScrollBar> {
         let horizontal = self.interior.scroll_metrics()?.horizontal?;
         let width = self.bounds.width();
         if width <= 2 {
             return None;
         }
+        let reserved = self.status_panel_rect().map_or(0, |r| r.width());
+        let bar_width = width - 2 - reserved;
+        if bar_width <= 0 {
+            return None;
+        }
         let mut bar = ScrollBar::horizontal(
             Rect::from_origin_size(
-                Point::new(1, self.bounds.height() - 1),
-                Size::new(width - 2, 1),
+                Point::new(1 + reserved, self.bounds.height() - 1),
+                Size::new(bar_width, 1),
             ),
             self.frame_style,
         );
         bar.set_metrics(horizontal.total, horizontal.visible, horizontal.pos);
         Some(bar)
+    }
+
+    /// The rectangle a hosted [`StatusPanel`] occupies on the bottom border,
+    /// left-aligned right after the corner — `None` unless
+    /// [`status_panel`](Self::status_panel) was enabled, the interior
+    /// actually has [`View::status_text`] to show, and the window is wide
+    /// enough to have a bottom border at all (ADR 0032).
+    fn status_panel_rect(&self) -> Option<Rect> {
+        if !self.status_panel {
+            return None;
+        }
+        self.interior.status_text()?;
+        let width = self.bounds.width();
+        if width <= 2 {
+            return None;
+        }
+        let panel_width = (width - 2).min(StatusPanel::DEFAULT_WIDTH);
+        Some(Rect::from_origin_size(
+            Point::new(1, self.bounds.height() - 1),
+            Size::new(panel_width, 1),
+        ))
+    }
+
+    /// The hosted [`StatusPanel`] itself, positioned via
+    /// [`status_panel_rect`](Self::status_panel_rect) and filled from the
+    /// interior's current [`View::status_text`].
+    fn status_panel_view(&self) -> Option<StatusPanel> {
+        let rect = self.status_panel_rect()?;
+        let mut panel = StatusPanel::new(rect, self.frame_style);
+        panel.set_text(self.interior.status_text());
+        Some(panel)
     }
 
     /// Pushes a new combined scroll offset to the interior, changing only the
@@ -539,6 +592,10 @@ impl View for Window {
             let mut sub = canvas.child(bar.bounds());
             bar.draw(&mut sub);
         }
+        if let Some(panel) = self.status_panel_view() {
+            let mut sub = canvas.child(panel.bounds());
+            panel.draw(&mut sub);
+        }
         let interior = self.interior_bounds();
         if !interior.is_empty() {
             let mut sub = canvas.child(interior);
@@ -652,6 +709,10 @@ impl View for Window {
 
     fn focusable(&self) -> bool {
         true
+    }
+
+    fn status_text(&self) -> Option<String> {
+        self.interior.status_text()
     }
 
     fn drop_shadow(&self) -> Option<Style> {
@@ -1250,6 +1311,138 @@ mod tests {
         });
         w.handle_event(&stray, &mut ctx);
         assert_eq!(pushed.borrow().len(), 1, "no further pushes after Up");
+    }
+
+    // --- Status panel hosting on the border (ADR 0032) ---
+
+    /// An interior that reports fixed horizontal scroll metrics and/or
+    /// status text, independently of each other.
+    struct WithStatus {
+        horizontal: Option<AxisMetrics>,
+        text: Option<String>,
+    }
+
+    impl View for WithStatus {
+        fn bounds(&self) -> Rect {
+            rect(0, 0, 100, 100)
+        }
+        fn draw(&self, _canvas: &mut Canvas) {}
+        fn scroll_metrics(&self) -> Option<ScrollMetrics> {
+            Some(ScrollMetrics {
+                horizontal: self.horizontal,
+                vertical: None,
+            })
+        }
+        fn status_text(&self) -> Option<String> {
+            self.text.clone()
+        }
+    }
+
+    fn horizontal_metrics(total: usize, visible: usize, pos: usize) -> Option<AxisMetrics> {
+        Some(AxisMetrics {
+            total,
+            visible,
+            pos,
+        })
+    }
+
+    fn bottom_row(buf: &Buffer) -> Vec<char> {
+        buf.to_text().lines().last().unwrap().chars().collect()
+    }
+
+    #[test]
+    fn window_status_text_delegates_to_the_interior_regardless_of_the_flag() {
+        let w = plain(
+            rect(0, 0, 20, 8),
+            Box::new(WithStatus {
+                horizontal: None,
+                text: Some("2 : 3   INS".to_string()),
+            }),
+        );
+        assert_eq!(w.status_text(), Some("2 : 3   INS".to_string()));
+    }
+
+    #[test]
+    fn status_panel_off_by_default_draws_nothing_even_with_interior_text() {
+        let w = plain(
+            rect(0, 0, 30, 8),
+            Box::new(WithStatus {
+                horizontal: horizontal_metrics(40, 20, 0),
+                text: Some("2 : 3   INS".to_string()),
+            }),
+        );
+        let mut buf = Buffer::new(Size::new(30, 8));
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        let bottom = bottom_row(&buf);
+        assert!(!bottom.iter().collect::<String>().contains("2 : 3"));
+        // No panel means the bar spans the full border, same as ADR 0015 alone.
+        assert_eq!(bottom.iter().position(|&c| c == '◄'), Some(1));
+        assert_eq!(bottom.iter().rposition(|&c| c == '►'), Some(28));
+    }
+
+    #[test]
+    fn status_panel_true_but_no_interior_text_leaves_the_bar_full_width() {
+        let w = plain(
+            rect(0, 0, 30, 8),
+            Box::new(WithStatus {
+                horizontal: horizontal_metrics(40, 20, 0),
+                text: None,
+            }),
+        )
+        .status_panel(true);
+        let mut buf = Buffer::new(Size::new(30, 8));
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        let bottom = bottom_row(&buf);
+        assert_eq!(bottom.iter().position(|&c| c == '◄'), Some(1));
+        assert_eq!(bottom.iter().rposition(|&c| c == '►'), Some(28));
+    }
+
+    #[test]
+    fn a_status_panel_shrinks_and_shifts_the_horizontal_bar_right() {
+        let w = plain(
+            rect(0, 0, 30, 8),
+            Box::new(WithStatus {
+                horizontal: horizontal_metrics(40, 20, 0),
+                text: Some("2 : 3   INS".to_string()),
+            }),
+        )
+        .status_panel(true);
+        let mut buf = Buffer::new(Size::new(30, 8));
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        let bottom = bottom_row(&buf);
+        assert!(bottom.iter().collect::<String>().contains("2 : 3"));
+        // 30-wide window: 28 usable border columns (1..29); StatusPanel::DEFAULT_WIDTH
+        // (18) reserved on the left, so the bar starts right after it and
+        // covers the remaining 10.
+        assert_eq!(
+            bottom.iter().position(|&c| c == '◄'),
+            Some(1 + StatusPanel::DEFAULT_WIDTH as usize)
+        );
+        assert_eq!(bottom.iter().rposition(|&c| c == '►'), Some(28));
+    }
+
+    #[test]
+    fn a_status_panel_with_no_horizontal_scroll_still_draws_alone() {
+        let w = plain(
+            rect(0, 0, 30, 8),
+            Box::new(WithStatus {
+                horizontal: None,
+                text: Some("2 : 3   INS".to_string()),
+            }),
+        )
+        .status_panel(true);
+        let mut buf = Buffer::new(Size::new(30, 8));
+        let mut canvas = Canvas::new(&mut buf);
+        w.draw(&mut canvas);
+        let bottom = bottom_row(&buf);
+        assert!(bottom.iter().collect::<String>().contains("2 : 3"));
+        assert!(
+            !bottom.iter().any(|&c| c == '◄' || c == '►'),
+            "no horizontal bar to draw at all"
+        );
     }
 
     // --- Resize propagation to the interior (ADR 0017) ---

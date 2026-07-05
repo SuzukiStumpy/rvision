@@ -115,6 +115,27 @@ impl TextArea {
         Some(&self.text[starts[start]..starts[end]])
     }
 
+    /// The cursor's logical `(line, column)` in the underlying text — real
+    /// newline-delimited lines, both 1-based, and unaffected by word-wrap
+    /// (unlike the wrapped on-screen row [`display_pos`](Self::display_pos)
+    /// computes for cursor drawing, ADR 0032).
+    pub fn cursor_line_col(&self) -> (usize, usize) {
+        let starts = text_edit::grapheme_starts(&self.text);
+        let byte = starts[self.cursor.min(starts.len() - 1)];
+        let before = &self.text[..byte];
+        let line = before.matches('\n').count() + 1;
+        let col = match before.rfind('\n') {
+            Some(newline) => before[newline + 1..].graphemes(true).count() + 1,
+            None => before.graphemes(true).count() + 1,
+        };
+        (line, col)
+    }
+
+    /// Whether the field is in overtype (replace) mode rather than insert.
+    pub fn is_overtype(&self) -> bool {
+        self.overtype
+    }
+
     /// The number of visible rows.
     fn rows(&self) -> usize {
         self.bounds.height().max(0) as usize
@@ -652,6 +673,12 @@ impl View for TextArea {
         self.top = (offset.y.max(0) as usize).min(max_top);
     }
 
+    fn status_text(&self) -> Option<String> {
+        let (line, col) = self.cursor_line_col();
+        let mode = if self.overtype { "OVR" } else { "INS" };
+        Some(format!("{line} : {col}   {mode}"))
+    }
+
     fn set_bounds(&mut self, bounds: Rect) {
         self.set_bounds(bounds);
     }
@@ -1167,6 +1194,55 @@ mod tests {
         );
         assert_eq!(t.top, 1);
         assert_eq!(t.cursor, cursor_before);
+    }
+
+    // --- Status text (ADR 0032) ---
+
+    #[test]
+    fn cursor_line_col_starts_at_one_one() {
+        let t = focused(20, 5).with_text("hello");
+        assert_eq!(t.cursor_line_col(), (1, 1));
+    }
+
+    #[test]
+    fn cursor_line_col_tracks_real_newlines_not_the_wrapped_display_row() {
+        let mut t = focused(4, 5).with_text("hi there\nworld");
+        // "hi there" wraps across more than one display row at width 4, but
+        // it's still logical line 1 throughout.
+        t.cursor = 0;
+        assert_eq!(t.cursor_line_col(), (1, 1));
+        t.cursor = 5; // inside "there", still line 1
+        assert_eq!(t.cursor_line_col(), (1, 6));
+        t.cursor = 9; // just past the real '\n', start of "world"
+        assert_eq!(t.cursor_line_col(), (2, 1));
+    }
+
+    #[test]
+    fn cursor_line_col_counts_graphemes_not_display_width() {
+        // A double-wide grapheme still counts as one logical column, unlike
+        // `display_pos`'s width-based column.
+        let mut t = focused(20, 5).with_text("好a");
+        t.cursor = 2; // past both graphemes
+        assert_eq!(t.cursor_line_col(), (1, 3));
+    }
+
+    #[test]
+    fn is_overtype_reflects_the_insert_key_toggle() {
+        let mut t = focused(20, 5);
+        assert!(!t.is_overtype());
+        press(&mut t, KeyCode::Insert);
+        assert!(t.is_overtype());
+        press(&mut t, KeyCode::Insert);
+        assert!(!t.is_overtype());
+    }
+
+    #[test]
+    fn status_text_formats_line_col_and_mode() {
+        let mut t = focused(20, 5).with_text("ab\ncd");
+        t.cursor = 4; // line 2, col 2
+        assert_eq!(t.status_text(), Some("2 : 2   INS".to_string()));
+        press(&mut t, KeyCode::Insert);
+        assert_eq!(t.status_text(), Some("2 : 2   OVR".to_string()));
     }
 
     // --- Render ---

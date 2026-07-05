@@ -604,6 +604,20 @@ retired in favour of a fresh roadmap with proper phases/milestones.
        "cross-group Tab boundary" question. Re-confirmed in the same tmux
        session: `Tab` now reaches OK/Cancel past the box, `Shift-Tab` returns
        to it.
+   - Scoped 2026-07-05: **status panel**, landed. A line/column +
+     insert/overtype indicator, hostable either on a `Window`'s own bottom
+     border (left of its horizontal `ScrollBar`, which shrinks to make room)
+     or on `Shell`'s desktop status row (right of `StatusLine`'s hints,
+     driven by whichever window is topmost). New pull-based
+     `View::status_text` (ADR 0032) — the same shape `scroll_metrics`
+     already established for scroll chrome (ADR 0015). `TextArea` gained
+     public `cursor_line_col`/`is_overtype` and formats
+     `"{line} : {col}   {mode}"`; the line/column tracked is the *logical*
+     source position (real newlines only), not the internal word-wrapped
+     display row `display_pos` uses for on-screen caret placement, so it
+     stays stable across a resize-triggered rewrap. Wired into
+     `examples/help_builder.rs`'s Source window via `.status_panel(true)`.
+     See [`docs/specs/status_panel.md`](specs/status_panel.md).
 7. ~~**Insert/overtype support** for text entry controls.~~ Landed
    2026-07-03: `InputLine` gained an `overtype: bool` field (default off,
    matching TurboVision); `KeyCode::Insert` toggles it. While on, a

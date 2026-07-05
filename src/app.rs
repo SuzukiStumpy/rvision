@@ -17,10 +17,10 @@ use crate::command::{CM_HELP, CM_QUIT, Command, CommandSet};
 use crate::event::{Event, EventResult, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect, Size};
 use crate::help::HelpContents;
-use crate::theme::Theme;
+use crate::theme::{Role, Theme};
 use crate::view::{Context, View};
 use crate::widgets::{
-    ContextMenu, Desktop, HelpWindow, MenuBar, Placement, StatusLine, Window, WindowId,
+    ContextMenu, Desktop, HelpWindow, MenuBar, Placement, StatusLine, StatusPanel, Window, WindowId,
 };
 use std::collections::VecDeque;
 use std::io;
@@ -388,6 +388,10 @@ pub struct Shell {
     /// `CM_HELP` closes and reopens this one, rather than letting duplicates
     /// accumulate.
     help_window: Option<WindowId>,
+    /// The desktop-hosted status panel, opted into via `with_status_panel`
+    /// (ADR 0032) — `None` (the default) leaves `status_line` spanning the
+    /// whole row exactly as before.
+    status_panel: Option<StatusPanel>,
 }
 
 /// The three chrome regions for a terminal of `size`: the menu-bar row, the
@@ -406,6 +410,26 @@ fn regions(size: Size) -> Regions {
         desktop: Rect::from_origin_size(Point::new(0, 1), Size::new(w, (h - 2).max(0))),
         status: Rect::from_origin_size(Point::new(0, (h - 1).max(0)), Size::new(w, 1)),
     }
+}
+
+/// Splits the status row between `status_line` (left) and a hosted
+/// `status_panel` (right, `StatusPanel::DEFAULT_WIDTH` columns), or leaves
+/// `status` to `status_line` alone with no panel rect at all when
+/// `has_panel` is `false` (ADR 0032). Shared by `Shell::relayout` (bounds
+/// bookkeeping) and `Shell::draw` (what actually gets painted), so the two
+/// never drift apart.
+fn split_status_row(status: Rect, has_panel: bool) -> (Rect, Option<Rect>) {
+    if !has_panel {
+        return (status, None);
+    }
+    let panel_width = StatusPanel::DEFAULT_WIDTH.min(status.width());
+    let line_width = status.width() - panel_width;
+    let line = Rect::from_origin_size(status.origin(), Size::new(line_width, status.height()));
+    let panel = Rect::from_origin_size(
+        Point::new(status.origin().x + line_width, status.origin().y),
+        Size::new(panel_width, status.height()),
+    );
+    (line, Some(panel))
 }
 
 impl Shell {
@@ -439,9 +463,23 @@ impl Shell {
             context_menu: None,
             help: None,
             help_window: None,
+            status_panel: None,
         };
         shell.relayout(size);
         shell
+    }
+
+    /// Opts `Shell` into a desktop-hosted status panel (ADR 0032): a
+    /// `StatusPanel` reserving `StatusPanel::DEFAULT_WIDTH` columns at the
+    /// right end of the status row, to the right of `status_line`'s hints,
+    /// refreshed every idle/broadcast tick from whichever window is
+    /// topmost. Without this (the default), `status_line` keeps the whole
+    /// row exactly as before.
+    pub fn with_status_panel(mut self) -> Self {
+        let empty = Rect::from_origin_size(Point::new(0, 0), Size::new(0, 0));
+        self.status_panel = Some(StatusPanel::new(empty, self.theme.style(Role::StatusBar)));
+        self.relayout(self.size);
+        self
     }
 
     /// Whether a menu pull-down is currently open (the menu bar runs modally then).
@@ -495,13 +533,20 @@ impl Shell {
         self.help_window = Some(self.desktop.open(window));
     }
 
-    /// Repositions the three children for a terminal of `size`.
+    /// Repositions the three children for a terminal of `size`. When a
+    /// desktop status panel is hosted (ADR 0032), the status row splits
+    /// between `status_line` (shrunk) and `status_panel` via
+    /// [`split_status_row`].
     fn relayout(&mut self, size: Size) {
         self.size = size;
         let r = regions(size);
         self.menu_bar.set_bounds(r.menu);
         self.desktop.set_bounds(r.desktop);
-        self.status_line.set_bounds(r.status);
+        let (line_rect, panel_rect) = split_status_row(r.status, self.status_panel.is_some());
+        self.status_line.set_bounds(line_rect);
+        if let (Some(panel), Some(rect)) = (&mut self.status_panel, panel_rect) {
+            panel.set_bounds(rect);
+        }
     }
 
     /// Three-pass key routing (ADR 0009): menu bar → active window → status line.
@@ -593,7 +638,11 @@ impl View for Shell {
         // Each child draws through a sub-canvas scoped so its borrow ends before
         // the next one reborrows the frame.
         self.desktop.draw(&mut canvas.child(r.desktop));
-        self.status_line.draw(&mut canvas.child(r.status));
+        let (line_rect, panel_rect) = split_status_row(r.status, self.status_panel.is_some());
+        self.status_line.draw(&mut canvas.child(line_rect));
+        if let (Some(panel), Some(rect)) = (&self.status_panel, panel_rect) {
+            panel.draw(&mut canvas.child(rect));
+        }
         self.menu_bar.draw(&mut canvas.child(r.menu));
         // The open pull-down is the last thing drawn, over the whole frame, so it
         // sits on top of the desktop below the bar (ADR 0009). An open context
@@ -634,6 +683,19 @@ impl View for Shell {
                 self.menu_bar.handle_event(event, ctx);
                 self.desktop.handle_event(event, ctx);
                 self.status_line.handle_event(event, ctx);
+                // Refreshes the desktop status panel from whichever window is
+                // topmost (ADR 0032) — the same `active_id` → `window` chain
+                // `open_help` uses to resolve the active window's help topic.
+                // Runs every tick, so it updates on a raise and stays live
+                // while typing.
+                if let Some(panel) = &mut self.status_panel {
+                    let text = self
+                        .desktop
+                        .active_id()
+                        .and_then(|id| self.desktop.window(id))
+                        .and_then(Window::status_text);
+                    panel.set_text(text);
+                }
                 EventResult::Ignored
             }
         }
@@ -1182,6 +1244,122 @@ mod tests {
             &mut ctx,
         );
         assert_eq!(ctx.posted(), &[Event::Command(hidden)]);
+    }
+
+    // --- Desktop status panel (ADR 0032) ---
+
+    /// An interior that always reports the same fixed status text.
+    struct FixedStatus {
+        bounds: Rect,
+        text: &'static str,
+    }
+
+    impl View for FixedStatus {
+        fn bounds(&self) -> Rect {
+            self.bounds
+        }
+        fn draw(&self, _canvas: &mut Canvas) {}
+        fn status_text(&self) -> Option<String> {
+            Some(self.text.to_string())
+        }
+    }
+
+    /// A shell with a desktop status panel opted in and two open windows —
+    /// "A" (opened first) reporting `"1 : 1   INS"`, "B" (opened last, so
+    /// topmost) reporting `"2 : 2   OVR"`.
+    fn shell_with_two_status_windows(size: Size) -> (Shell, WindowId, WindowId) {
+        use crate::theme::Role;
+        let theme = Theme::default();
+        let (w, h) = (size.width, size.height);
+        let menu_bar = MenuBar::new(full(Size::new(w, 1)), vec![], &theme);
+        let mut desktop = Desktop::new(
+            Rect::from_origin_size(Point::new(0, 1), Size::new(w, h - 2)),
+            Cell::from_char('░', theme.style(Role::DesktopBackground)),
+        );
+        let a = desktop.open(Window::new(
+            Rect::from_origin_size(Point::new(2, 1), Size::new(20, 5)),
+            "A",
+            &theme,
+            Box::new(FixedStatus {
+                bounds: full(Size::new(18, 3)),
+                text: "1 : 1   INS",
+            }),
+        ));
+        let b = desktop.open(Window::new(
+            Rect::from_origin_size(Point::new(4, 2), Size::new(20, 5)),
+            "B",
+            &theme,
+            Box::new(FixedStatus {
+                bounds: full(Size::new(18, 3)),
+                text: "2 : 2   OVR",
+            }),
+        ));
+        let status = StatusLine::new(
+            Rect::from_origin_size(Point::new(0, h - 1), Size::new(w, 1)),
+            vec![StatusItem::new(
+                "Alt-X",
+                "Exit",
+                Accelerator::new(KeyEvent::new(KeyCode::Char('x'), Modifiers::ALT), CM_QUIT),
+            )],
+            theme.style(Role::StatusBar),
+            theme.style(Role::StatusKey),
+        );
+        let shell = Shell::new(size, menu_bar, desktop, status, &theme).with_status_panel();
+        (shell, a, b)
+    }
+
+    fn draw_bottom_row(sh: &Shell, size: Size) -> String {
+        let mut buf = Buffer::new(size);
+        let mut canvas = Canvas::new(&mut buf);
+        sh.draw(&mut canvas);
+        buf.to_text().lines().last().unwrap().to_string()
+    }
+
+    #[test]
+    fn desktop_status_panel_reflects_the_topmost_window_after_an_idle_tick() {
+        let (mut sh, _a, _b) = shell_with_two_status_windows(Size::new(40, 10));
+        sh.handle_event(&Event::Idle, &mut Context::new(&CommandSet::new()));
+        let bottom = draw_bottom_row(&sh, Size::new(40, 10));
+        assert!(
+            bottom.contains("2 : 2   OVR"),
+            "B was opened last, so it's topmost"
+        );
+    }
+
+    #[test]
+    fn desktop_status_panel_follows_a_raise_on_the_next_idle_tick() {
+        let (mut sh, a, _b) = shell_with_two_status_windows(Size::new(40, 10));
+        sh.desktop_mut().focus(a);
+        sh.handle_event(&Event::Idle, &mut Context::new(&CommandSet::new()));
+        let bottom = draw_bottom_row(&sh, Size::new(40, 10));
+        assert!(bottom.contains("1 : 1   INS"));
+        assert!(!bottom.contains("2 : 2   OVR"));
+    }
+
+    #[test]
+    fn with_status_panel_reserves_the_right_end_of_the_status_row() {
+        let (mut sh, _a, _b) = shell_with_two_status_windows(Size::new(40, 10));
+        sh.handle_event(&Event::Idle, &mut Context::new(&CommandSet::new()));
+        let bottom = draw_bottom_row(&sh, Size::new(40, 10));
+        let chars: Vec<char> = bottom.chars().collect();
+        assert_eq!(chars.len(), 40);
+        let panel_start = 40 - StatusPanel::DEFAULT_WIDTH as usize;
+        let panel_region: String = chars[panel_start..].iter().collect();
+        assert!(panel_region.contains("2 : 2"));
+        let hint_region: String = chars[..panel_start].iter().collect();
+        assert!(
+            hint_region.contains("Exit"),
+            "status_line's own hints still fit in what's left"
+        );
+    }
+
+    #[test]
+    fn no_status_panel_by_default_leaves_the_status_line_the_full_row() {
+        // shell() never calls with_status_panel — the pre-existing default.
+        let sh = shell(Size::new(40, 10), no_log());
+        let bottom = draw_bottom_row(&sh, Size::new(40, 10));
+        assert_eq!(bottom.chars().count(), 40);
+        assert!(bottom.contains("Help"));
     }
 
     #[test]

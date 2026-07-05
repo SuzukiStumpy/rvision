@@ -107,6 +107,14 @@ pub trait View {
         let _ = offset;
     }
 
+    /// The status text this view wants shown in a hosting owner's status
+    /// panel, or `None` if it has none to offer (ADR 0032). Queried every
+    /// draw, like [`scroll_metrics`](Self::scroll_metrics). Pull-only:
+    /// unlike scrolling, there's nothing for an owner to push back.
+    fn status_text(&self) -> Option<String> {
+        None
+    }
+
     /// Whether it is currently OK to act on `command` (TurboVision's
     /// `TView::valid`) — e.g. close, quit, zoom (ADR 0016). Default: always
     /// OK. A view that needs to refuse (unsaved changes) can also post a
@@ -1350,6 +1358,14 @@ mod tests {
         let mut text = StaticText::new(rect(0, 0, 5, 1), "x", Style::new());
         assert_eq!(text.scroll_metrics(), None);
         text.set_scroll(Point::new(3, 4)); // no panic, no-op
+    }
+
+    // --- Status-content protocol (ADR 0032) ---
+
+    #[test]
+    fn a_plain_view_reports_no_status_text() {
+        let text = StaticText::new(rect(0, 0, 5, 1), "x", Style::new());
+        assert_eq!(text.status_text(), None);
     }
 
     /// A view that reports a fixed vertical range and records the last

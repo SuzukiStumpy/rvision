@@ -44,5 +44,6 @@ workspace from the start, so it kept its original number unchanged.
 | [0029](0029-help-format-escape-syntax.md) | Backslash-escape syntax for the `.help` format: `\@`/`\<`/`\#`/`\{`/`\\`, `<pre>` content untouched |
 | [0030](0030-per-view-topmost-priority.md) | Per-view topmost priority for transient popups (`View::wants_topmost`), `Group`-scoped |
 | [0031](0031-non-wrapping-nested-focus-groups.md) | Non-wrapping nested focus groups (`Group::non_wrapping`): a boundary Tab escapes to the owning group instead of wrapping locally |
+| [0032](0032-status-content-per-view-protocol.md) | Status content is a per-view protocol (`View::status_text`), hosted by `Window`'s frame or `Shell`'s desktop status row |
 
 New decision? Copy [`0000-template.md`](0000-template.md).

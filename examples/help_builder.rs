@@ -122,6 +122,10 @@ impl View for SharedTextArea {
         self.0.borrow_mut().set_scroll(offset)
     }
 
+    fn status_text(&self) -> Option<String> {
+        self.0.borrow().status_text()
+    }
+
     fn set_bounds(&mut self, bounds: Rect) {
         self.0.borrow_mut().set_bounds(bounds)
     }
@@ -407,7 +411,8 @@ fn main() -> io::Result<()> {
         &theme,
         Box::new(SharedTextArea(Rc::clone(&text_area))),
     )
-    .closable(false);
+    .closable(false)
+    .status_panel(true);
 
     let mut desktop = Desktop::new(
         rect(0, 1, desk_w, desk_h),

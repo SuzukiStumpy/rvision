@@ -1,0 +1,5 @@
+---
+source: src/widgets/status_panel.rs
+expression: buf.to_text()
+---
+ 12345
