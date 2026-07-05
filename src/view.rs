@@ -224,9 +224,9 @@ impl<'a> Context<'a> {
     }
 
     /// The current command-enable state, e.g. to snapshot a gate at
-    /// construction time (a [`ContextMenu`](crate::widgets::ContextMenu) built
-    /// on demand does this, mirroring how a statically-held widget is instead
-    /// pushed one via `sync_enabled`).
+    /// construction time (a `ContextMenu` built on demand does this,
+    /// mirroring how a statically-held widget is instead pushed one via
+    /// `sync_enabled`).
     pub fn commands(&self) -> &CommandSet {
         self.commands
     }

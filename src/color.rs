@@ -229,7 +229,7 @@ pub enum ColorProfile {
 impl ColorProfile {
     /// Detects the running terminal's colour capability from the process
     /// environment. The one impure entry point — the decision itself is the
-    /// pure, unit-tested [`profile_from_env`].
+    /// pure, unit-tested `profile_from_env`.
     pub fn detect() -> Self {
         profile_from_env(
             std::env::var("COLORTERM").ok().as_deref(),

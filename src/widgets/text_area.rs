@@ -117,8 +117,8 @@ impl TextArea {
 
     /// The cursor's logical `(line, column)` in the underlying text — real
     /// newline-delimited lines, both 1-based, and unaffected by word-wrap
-    /// (unlike the wrapped on-screen row [`display_pos`](Self::display_pos)
-    /// computes for cursor drawing, ADR 0032).
+    /// (unlike the wrapped on-screen row `display_pos` computes for cursor
+    /// drawing, ADR 0032).
     pub fn cursor_line_col(&self) -> (usize, usize) {
         let starts = text_edit::grapheme_starts(&self.text);
         let byte = starts[self.cursor.min(starts.len() - 1)];

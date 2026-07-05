@@ -435,7 +435,7 @@ fn split_status_row(status: Rect, has_panel: bool) -> (Rect, Option<Rect>) {
 impl Shell {
     /// Assembles a shell for a terminal of `size` from its three chrome pieces,
     /// positioning each to the matching region. `theme` is kept to build a
-    /// [`ContextMenu`] on demand (ADR 0019); the three chrome pieces have
+    /// `ContextMenu` on demand (ADR 0019); the three chrome pieces have
     /// already resolved their own styles from it.
     ///
     /// Every `status_line` item's [`Accelerator`](crate::command::Accelerator)
