@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.0.0](https://github.com/SuzukiStumpy/rvision/compare/v1.1.0...v2.0.0) (2026-07-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* StatusItem::new's signature changes from (hint, label, key, command) to (hint, label, accelerator).
+
+### Features
+
+* add a system-level global keyboard accelerator table (ADR 0028) ([49cb4d9](https://github.com/SuzukiStumpy/rvision/commit/49cb4d9ac65f3f620c0f229df9db3757dcebea93))
+* add ComboBox widget with filtering, type-ahead, and select-only modes (roadmap [#6](https://github.com/SuzukiStumpy/rvision/issues/6)) ([d2f5029](https://github.com/SuzukiStumpy/rvision/commit/d2f502926a1f695338a3ee8539425a6b95f56240))
+* add GroupBox widget with titled border, plus a nested-focus-group fix (roadmap [#6](https://github.com/SuzukiStumpy/rvision/issues/6)) ([42f3b9c](https://github.com/SuzukiStumpy/rvision/commit/42f3b9c436bdd53f73638ead9afbe0a5302421c4))
+* add StatusPanel widget: line/col + insert/overtype indicator (roadmap [#6](https://github.com/SuzukiStumpy/rvision/issues/6), ADR 0032) ([c5f2545](https://github.com/SuzukiStumpy/rvision/commit/c5f2545371121b8e9180031d6c359d8ba74e9cb2))
+* add TextArea widget with word motion and selection (roadmap [#6](https://github.com/SuzukiStumpy/rvision/issues/6)) ([f595150](https://github.com/SuzukiStumpy/rvision/commit/f5951500bed34d26e341a61f36dca3f91f62f53b))
+* backslash-escape syntax for the .help format (ADR 0029) ([cb6e62b](https://github.com/SuzukiStumpy/rvision/commit/cb6e62b2192230fe0c4b59a3c10add88f8f9d5f9))
+* help_builder example, scroll-bar thumb dragging (roadmap [#3](https://github.com/SuzukiStumpy/rvision/issues/3), ADR 0027) ([c9f02b5](https://github.com/SuzukiStumpy/rvision/commit/c9f02b579a5fbb403f68579f63c3b0b3db86bc07))
+* insert/overtype, a truecolour theme, and a theme picker (roadmap [#1](https://github.com/SuzukiStumpy/rvision/issues/1)/[#2](https://github.com/SuzukiStumpy/rvision/issues/2)/[#7](https://github.com/SuzukiStumpy/rvision/issues/7)) ([396e1c5](https://github.com/SuzukiStumpy/rvision/commit/396e1c5835401aa4b6bed53c78b0f1a598f901ba))
+* permanent Guide window in help_builder (roadmap [#3](https://github.com/SuzukiStumpy/rvision/issues/3)) ([5a2384c](https://github.com/SuzukiStumpy/rvision/commit/5a2384ce9c2acd0d95d2beb73e1bcd6cbe2a6c80))
+* publish to crates.io on release, add package metadata (ADR 0022 addendum) ([6c5cd77](https://github.com/SuzukiStumpy/rvision/commit/6c5cd77fe5044ae08df62914a12895bb69d2710d))
+* show the current directory in Open/Save dialogs ([9752c28](https://github.com/SuzukiStumpy/rvision/commit/9752c28cf165e1a229f499346ffc3910ff0e4fba))
+
+
+### Bug Fixes
+
+* teach help_builder's link-target test to skip escaped braces ([60a7ecf](https://github.com/SuzukiStumpy/rvision/commit/60a7ecffa81f995c746b05eafdc920b714119685))
+
 ## [1.1.0](https://github.com/SuzukiStumpy/rvision/compare/v1.0.0...v1.1.0) (2026-07-03)
 
 
