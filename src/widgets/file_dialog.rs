@@ -181,6 +181,20 @@ impl FileDialog {
         ctx.post(CM_OK);
     }
 
+    /// Backstops `accept()`: a focused `Button` posts its own command
+    /// directly on activation (a click, or `Enter`/`Space` while focused,
+    /// ADR 0003), so `Open`/`Save` can end the dialog with `CM_OK` without
+    /// ever going through `accept()`. Called after routing a key or mouse
+    /// event to a child control, this catches that case by watching for
+    /// `CM_OK` in what the dispatch just posted, rather than special-casing
+    /// the `open` button specifically — robust against any future control
+    /// that can end the dialog the same way.
+    fn sync_result_on_ok(&mut self, ctx: &Context) {
+        if ctx.posted().contains(&Event::Command(CM_OK)) {
+            *self.result.borrow_mut() = self.path();
+        }
+    }
+
     /// Reads `dir`, rebuilds the list (with a leading `..` unless at the root),
     /// clears the name field, and returns focus to the list.
     fn set_dir(&mut self, dir: PathBuf) {
@@ -341,7 +355,7 @@ impl FileDialog {
     /// Routes a non-navigation key to the focused control.
     fn route(&mut self, key: KeyEvent, ctx: &mut Context) -> EventResult {
         let event = Event::Key(key);
-        match self.focus {
+        let result = match self.focus {
             FOCUS_LIST => {
                 let result = self.list.handle_event(&event, ctx);
                 self.sync_input_from_list();
@@ -351,7 +365,9 @@ impl FileDialog {
             FOCUS_OPEN => self.open.handle_event(&event, ctx),
             FOCUS_CANCEL => self.cancel.handle_event(&event, ctx),
             _ => EventResult::Ignored,
-        }
+        };
+        self.sync_result_on_ok(ctx);
+        result
     }
 
     /// Routes a mouse event (already in this interior's own local
@@ -415,7 +431,7 @@ impl FileDialog {
             pos: local_pos,
             ..*m
         });
-        match i {
+        let result = match i {
             FOCUS_LIST => {
                 let result = if self.handle_list_bar_hit(local_pos, m.kind, ctx) {
                     EventResult::Consumed
@@ -434,7 +450,9 @@ impl FileDialog {
             FOCUS_OPEN => self.open.handle_event(&local, ctx),
             FOCUS_CANCEL => self.cancel.handle_event(&local, ctx),
             _ => EventResult::Ignored,
-        }
+        };
+        self.sync_result_on_ok(ctx);
+        result
     }
 }
 
@@ -718,6 +736,54 @@ mod tests {
             "double-clicking a file accepts, like select + Enter"
         );
         assert_eq!(d.path(), PathBuf::from("/root/a.txt"));
+    }
+
+    #[test]
+    fn clicking_open_with_the_mouse_updates_the_result_handle() {
+        // Regression: `accept()` was only ever called from `on_enter` (Enter,
+        // or a list double-click); clicking the Open button itself let
+        // `Button` post `CM_OK` on its own, so `exec_view` returned `CM_OK`
+        // with the shared result handle still empty.
+        let mut d = dialog(); // entries: .., sub, a.txt, b.txt
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        // Select "a.txt" via a list click first (fills the name field).
+        let select = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(2, 6),
+            modifiers: Modifiers::NONE,
+        });
+        d.handle_event(&select, &mut ctx);
+        ctx.take_posted();
+
+        // Click the Open button itself — not Enter, not a double-click.
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: d.open.bounds().origin(),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(d.handle_event(&click, &mut ctx), EventResult::Consumed);
+        assert_eq!(ctx.take_posted(), vec![Event::Command(CM_OK)]);
+        assert_eq!(*d.result.borrow(), PathBuf::from("/root/a.txt"));
+    }
+
+    #[test]
+    fn pressing_space_on_the_focused_open_button_updates_the_result_handle() {
+        // Same root cause as the mouse click above: `Button` also activates
+        // on a focused `Space`, bypassing `accept()` just the same.
+        let mut d = dialog();
+        press(&mut d, KeyCode::Down); // sub
+        press(&mut d, KeyCode::Down); // a.txt
+        press(&mut d, KeyCode::Tab); // FOCUS_INPUT
+        press(&mut d, KeyCode::Tab); // FOCUS_OPEN
+        assert_eq!(d.focus, FOCUS_OPEN);
+
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let space = Event::Key(KeyEvent::new(KeyCode::Char(' '), Modifiers::NONE));
+        assert_eq!(d.handle_event(&space, &mut ctx), EventResult::Consumed);
+        assert_eq!(ctx.take_posted(), vec![Event::Command(CM_OK)]);
+        assert_eq!(*d.result.borrow(), PathBuf::from("/root/a.txt"));
     }
 
     #[test]
@@ -1096,6 +1162,39 @@ mod tests {
             &mut ctx,
         );
         assert_eq!(r, EventResult::Consumed);
+        assert_eq!(result.path(), PathBuf::from("/root/a.txt"));
+    }
+
+    #[test]
+    fn clicking_open_with_the_mouse_updates_the_result_handle_through_the_window() {
+        // The end-to-end repro from the bug report: clicking Open with the
+        // mouse (not Enter, not a double-click) through the real assembled
+        // Window + FileDialogResult, the way an application actually uses it.
+        let (mut w, result) = window();
+        assert_eq!(result.path(), PathBuf::new());
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        // Down twice (past "..", "sub") to "a.txt" so the name field is filled.
+        w.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Down, Modifiers::NONE)),
+            &mut ctx,
+        );
+        w.handle_event(
+            &Event::Key(KeyEvent::new(KeyCode::Down, Modifiers::NONE)),
+            &mut ctx,
+        );
+
+        // Window-local coordinates: the interior sits one cell in from the
+        // border on every side, so the Open button's window-local origin is
+        // its interior-local origin plus (1, 1).
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(WIDTH - 24 + 1, HEIGHT - 1 + 1),
+            modifiers: Modifiers::NONE,
+        });
+        let r = w.handle_event(&click, &mut ctx);
+        assert_eq!(r, EventResult::Consumed);
+        assert_eq!(ctx.posted(), &[Event::Command(CM_OK)]);
         assert_eq!(result.path(), PathBuf::from("/root/a.txt"));
     }
 
