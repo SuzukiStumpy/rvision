@@ -197,9 +197,20 @@ Trusted Publisher entry can be registered for a crate.
   registered against this repository, this exact workflow filename, and no
   `environment` (the job declares none) — done directly in the crates.io UI,
   outside this repo, so not itself recorded here beyond this note.
+- **Proven the same day.** A deliberate, minimal `fix:` commit (four
+  `rustdoc::private_intra_doc_links` warnings — public docs linking to
+  `pub(crate)`/private items in `app.rs`, `color.rs`, `view.rs`,
+  `text_area.rs`) gave release-please something real but low-risk to cut a
+  patch release from. Merging the resulting PR tagged `v2.0.1`, and the
+  `publish` job's log shows the full OIDC exchange working exactly as
+  designed: a GitHub Actions JWT retrieved, exchanged at
+  `crates.io/api/v1/trusted_publishing/tokens`, used for `cargo publish`, then
+  revoked in the job's post-step. `rvision v2.0.1`'s own crates.io API record
+  carries real `trustpub_data` (`provider: github`, this repository, the
+  triggering run ID and commit SHA) confirming crates.io itself attributes
+  the publish to trusted publishing, not a token.
 - **The old `CARGO_REGISTRY_TOKEN` repository secret and its underlying
-  crates.io API token are not yet revoked**, deliberately: the trusted-
-  publishing path is configured but unexercised by a real release as of this
-  addendum (the workflow change landed after `v2.0.0` was already out). Revoke
-  both only after the next release-please PR merge proves the new path end to
-  end — reverting to the old step is the fallback if it doesn't.
+  crates.io API token are now redundant** and should be deleted/revoked
+  (GitHub repo Settings → Secrets and variables → Actions; crates.io Account
+  Settings → API Tokens) — both manual, account-side actions outside what
+  this repo or its automation can do.
