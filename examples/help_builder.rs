@@ -561,10 +561,10 @@ mod guide_content {
 
     /// Extracts every `{label|target}` target from raw markup (links are
     /// reduced to label text at parse time, so this scans the source) —
-    /// skipping `<pre>`-fenced lines, since the real parser never
-    /// link-scans those either (this Guide's own "links" topic shows the
-    /// `{label|target}` syntax literally inside one, which isn't a real
-    /// link to check).
+    /// skipping `<pre>`-fenced lines and any `\{`-escaped brace (ADR 0029),
+    /// since the real parser never link-scans either (this Guide's own
+    /// "links" topic shows the `{label|target}` syntax literally via
+    /// `\{...}`, which isn't a real link to check).
     fn link_targets(src: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut in_pre = false;
@@ -583,6 +583,10 @@ mod guide_content {
             }
             let mut rest = line;
             while let Some(o) = rest.find('{') {
+                if o > 0 && rest.as_bytes()[o - 1] == b'\\' {
+                    rest = &rest[o + 1..];
+                    continue;
+                }
                 let after = &rest[o + 1..];
                 if let Some(bar) = after.find('|') {
                     let ab = &after[bar + 1..];
