@@ -81,6 +81,16 @@ impl ListBox {
             .map(String::as_str)
     }
 
+    /// Clears the selection outright — unlike `new` (which auto-selects the
+    /// first item) and `select` (which always lands on a real index), this
+    /// leaves nothing highlighted. For a consumer that rebuilds a `ListBox`
+    /// from scratch as its content changes (e.g.
+    /// [`ComboBox`](super::ComboBox)'s type-ahead search) and needs to show
+    /// "no candidate matches" rather than a construction-default row 0.
+    pub fn deselect(&mut self) {
+        self.selected = None;
+    }
+
     /// Selects item `index` (clamped to the last item), scrolling it into view.
     /// A no-op on an empty list.
     pub fn select(&mut self, index: usize) {
@@ -467,6 +477,23 @@ mod tests {
         let empty = ListBox::new(rect(10, 4), vec![], &Theme::default());
         assert_eq!(empty.selected(), None);
         assert_eq!(empty.selected_text(), None);
+    }
+
+    #[test]
+    fn deselect_clears_the_construction_default_selection() {
+        let mut lb = list(10, 4, &["a", "b", "c"]);
+        assert_eq!(lb.selected(), Some(0), "new() auto-selects the first item");
+        lb.deselect();
+        assert_eq!(lb.selected(), None);
+        assert_eq!(lb.selected_text(), None);
+    }
+
+    #[test]
+    fn deselect_then_select_lands_on_a_real_index_again() {
+        let mut lb = list(10, 4, &["a", "b", "c"]);
+        lb.deselect();
+        lb.select(1);
+        assert_eq!(lb.selected(), Some(1));
     }
 
     #[test]

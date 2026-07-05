@@ -509,6 +509,60 @@ retired in favour of a fresh roadmap with proper phases/milestones.
        `TextArea`-level regression test asserts the caret's display
        position changes on the very first and second keystrokes typed into
        an interior gap, not just eventually. 634 tests pass.
+   - ~~Combo box.~~ Landed 2026-07-05:
+     [`widgets::ComboBox`](../src/widgets/combo_box.rs) — see
+     [`docs/specs/combo_box.md`](specs/combo_box.md). An editable
+     `InputLine` plus a `ListBox`-rendered drop-down of suggestions,
+     composed rather than reinvented (the same precedent `ColorPicker`/
+     `ThemeEditor` already set). No new overlay mechanism: `bounds()`
+     simply reports a taller rectangle while open, which ordinary
+     `Group::draw`/`dispatch_positional` already query fresh every
+     frame/event — geometry alone, no framework change.
+     - Manual testing (a dialog: `ComboBox` then OK/Cancel `Button`s, all one
+       `Group`) found the piece that idea *didn't* cover: z-order. `Group`
+       draws/hit-tests children in plain vector order, so once enough
+       candidates matched to reach the buttons, they drew over the
+       drop-down and stole its clicks — first drafted as an accepted
+       trade-off ("leave room below it"), then reopened once reported back
+       as real friction rather than acceptable layout discipline (an open
+       combo box's footprint scales with however many candidates match,
+       which a dialog author can't lay out around in advance). Fixed
+       properly via ADR 0030: a new defaulted `View::wants_topmost() ->
+       bool` (mirroring `drop_shadow`'s "declare a property, the owner acts
+       on it" shape, ADR 0011) that `Group` now honours in both draw
+       (topmost-requesting children paint last, over ordinary siblings) and
+       hit-testing (checked first) — a small, generic, reusable mechanism,
+       not a `ComboBox`-specific patch.
+     - Also found: `Window::esc_cancels(true)` posts `CM_CANCEL` before its
+       interior ever sees `Esc` (ADR 0016, pre-existing, working as
+       designed) — fine for every other modal widget, since none of them
+       gives `Esc` a meaning of its own, but `ComboBox` is the first one
+       that does (close its own drop-down without cancelling the dialog).
+       Not a bug to fix; a composition constraint to know about — the
+       `combo_box` example leaves `esc_cancels` off for exactly this reason,
+       documented in the spec.
+     - Extended twice more the same day, both requested together: typing
+       against an open drop-down defaults to narrowing it (today's
+       behaviour), but `.filterable(false)` swaps that for classic list
+       type-ahead instead — the full list stays shown and typing just jumps
+       `highlight` to the first match, without touching what was typed.
+       `.select_only(true)` goes further, locking the value to one of
+       `items` outright: printable keys/paste can never insert free text,
+       only extend a search that jumps to (and displays) the first match.
+       The two flags are orthogonal (e.g. `select_only` + non-`filterable`
+       still shows the full list while jumping — a classic native
+       `<select>`). Implementing the "jump to first match" behaviour
+       surfaced one more small `ListBox` gap: a freshly-rebuilt `ListBox`
+       auto-selects row 0 by its own construction default, which would
+       misleadingly show a "match" when a search actually found nothing —
+       fixed with a new `ListBox::deselect()`, small and directly justified
+       by this real need (not spec'd speculatively).
+     - Manual pass: the `combo_box` example, extended to show all three
+       modes side by side in one dialog, run in a real terminal (tmux) —
+       narrowing/type-ahead/select-only all confirmed, along with the
+       z-order fix (an OK/Cancel row the filtering combo's drop-down
+       actually reaches, now drawn under it and still receiving its clicks
+       correctly) and the `esc_cancels` composition note.
 7. ~~**Insert/overtype support** for text entry controls.~~ Landed
    2026-07-03: `InputLine` gained an `overtype: bool` field (default off,
    matching TurboVision); `KeyCode::Insert` toggles it. While on, a

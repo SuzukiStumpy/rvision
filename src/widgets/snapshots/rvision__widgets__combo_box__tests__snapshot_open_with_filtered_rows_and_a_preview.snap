@@ -1,0 +1,8 @@
+---
+source: src/widgets/combo_box.rs
+assertion_line: 618
+expression: render(&cb)
+---
+Green          ▲
+Green           
+Grey

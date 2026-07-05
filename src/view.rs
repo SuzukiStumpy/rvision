@@ -50,6 +50,21 @@ pub trait View {
         None
     }
 
+    /// Whether this view wants z-order priority over its siblings right now
+    /// — drawn after every non-requesting sibling (so it paints on top
+    /// regardless of vector position) and hit-tested before them (ADR
+    /// 0030). Queried every frame/event, like [`drop_shadow`](Self::drop_shadow).
+    ///
+    /// For a transient popup that can grow past its "natural" footprint —
+    /// [`ComboBox`](crate::widgets::ComboBox)'s open drop-down is the
+    /// motivating case — insertion order alone doesn't guarantee it wins
+    /// against a later sibling (e.g. a dialog's OK/Cancel buttons) that
+    /// happens to occupy the same screen area. The default `false` leaves
+    /// ordinary insertion-order z-order exactly as it was.
+    fn wants_topmost(&self) -> bool {
+        false
+    }
+
     /// Handles one event, returning whether it was consumed (ADR 0004). A view
     /// emits its own commands by posting them to `ctx`; it never references
     /// another view.
@@ -335,12 +350,45 @@ impl Group {
         self.focused
     }
 
+    /// Indices in the order [`draw`](View::draw) should visit them: every
+    /// child *not* requesting topmost priority first (original relative
+    /// order, unchanged), then every child that does (also its original
+    /// relative order) — so a requesting child always paints last, over any
+    /// ordinary sibling (ADR 0030).
+    fn draw_order(&self) -> Vec<usize> {
+        let n = self.children.len();
+        let mut order: Vec<usize> = (0..n)
+            .filter(|&i| !self.children[i].wants_topmost())
+            .collect();
+        order.extend((0..n).filter(|&i| self.children[i].wants_topmost()));
+        order
+    }
+
+    /// Indices in the order [`dispatch_positional`](Self::dispatch_positional)
+    /// should hit-test them: topmost-requesting children first (reverse of
+    /// their relative order, so two such children still resolve topmost-first
+    /// between themselves), then the ordinary reverse-order scan of the rest
+    /// — the mirror image of [`draw_order`](Self::draw_order) (ADR 0030).
+    fn hit_test_order(&self) -> Vec<usize> {
+        let n = self.children.len();
+        let mut order: Vec<usize> = (0..n)
+            .filter(|&i| self.children[i].wants_topmost())
+            .collect();
+        order.reverse();
+        let mut rest: Vec<usize> = (0..n)
+            .filter(|&i| !self.children[i].wants_topmost())
+            .collect();
+        rest.reverse();
+        order.extend(rest);
+        order
+    }
+
     /// Positional phase: deliver to the topmost child under the pointer, with the
     /// position translated into that child's local coordinates (ADR 0004). A
     /// left-press first moves focus to the clicked child if it can take it, so
     /// clicking a control focuses it the way TurboVision does.
     fn dispatch_positional(&mut self, mouse: MouseEvent, ctx: &mut Context) -> EventResult {
-        for i in (0..self.children.len()).rev() {
+        for i in self.hit_test_order() {
             let bounds = self.children[i].bounds();
             if bounds.contains(mouse.pos) {
                 if matches!(mouse.kind, MouseKind::Down(MouseButton::Left))
@@ -435,7 +483,8 @@ impl View for Group {
     }
 
     fn draw(&self, canvas: &mut Canvas) {
-        for child in &self.children {
+        for i in self.draw_order() {
+            let child = &self.children[i];
             // A floating child casts its drop shadow on this group's surface
             // before it — and any higher sibling — is drawn on top (ADR 0011).
             if let Some(style) = child.drop_shadow() {
@@ -510,6 +559,7 @@ mod tests {
         focusable: bool,
         log: Log,
         post: Option<(KeyCode, Command)>,
+        topmost: bool,
     }
 
     impl Probe {
@@ -520,11 +570,18 @@ mod tests {
                 focusable,
                 log: Rc::clone(log),
                 post: None,
+                topmost: false,
             }
         }
 
         fn posting(mut self, key: KeyCode, command: Command) -> Self {
             self.post = Some((key, command));
+            self
+        }
+
+        /// Opts into ADR 0030's z-order priority (`View::wants_topmost`).
+        fn topmost(mut self, yes: bool) -> Self {
+            self.topmost = yes;
             self
         }
 
@@ -557,6 +614,10 @@ mod tests {
 
         fn focusable(&self) -> bool {
             self.focusable
+        }
+
+        fn wants_topmost(&self) -> bool {
+            self.topmost
         }
     }
 
@@ -1059,6 +1120,106 @@ mod tests {
         assert_eq!(body.style(), Style::new());
         // …and a cell clear of both is untouched.
         assert_eq!(buf.get(Point::new(0, 0)).unwrap().style(), Style::new());
+    }
+
+    // --- Topmost priority protocol (ADR 0030) ---
+
+    #[test]
+    fn a_plain_view_does_not_want_topmost() {
+        let text = StaticText::new(rect(0, 0, 5, 1), "x", Style::new());
+        assert!(!text.wants_topmost());
+    }
+
+    #[test]
+    fn a_topmost_child_draws_over_a_later_ordinary_sibling_at_the_same_spot() {
+        // Child 0 requests topmost priority; child 1 is an ordinary later
+        // sibling occupying the same cell. Insertion order alone would have
+        // child 1 (drawn last) win — `wants_topmost` must override that.
+        let log: Log = Log::default();
+        let group = Group::new(
+            rect(0, 0, 5, 5),
+            vec![
+                Probe::new(1, rect(0, 0, 3, 3), false, &log)
+                    .topmost(true)
+                    .boxed(),
+                Probe::new(2, rect(0, 0, 3, 3), false, &log).boxed(),
+            ],
+        );
+        let mut buf = Buffer::new(Size::new(5, 5));
+        let mut canvas = Canvas::new(&mut buf);
+        group.draw(&mut canvas);
+        assert_eq!(
+            buf.get(Point::new(0, 0)).unwrap().grapheme().to_string(),
+            "1",
+            "the topmost-requesting child painted last, over its ordinary sibling"
+        );
+    }
+
+    #[test]
+    fn a_topmost_child_is_hit_tested_before_a_later_ordinary_sibling() {
+        let log: Log = Log::default();
+        let mut group = Group::new(
+            rect(0, 0, 5, 5),
+            vec![
+                Probe::new(1, rect(0, 0, 3, 3), false, &log)
+                    .topmost(true)
+                    .boxed(),
+                Probe::new(2, rect(0, 0, 3, 3), false, &log).boxed(),
+            ],
+        );
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        group.handle_event(&mouse_down_at(1, 1), &mut ctx);
+        let seen = log.borrow();
+        assert_eq!(seen.len(), 1, "only the topmost-requesting child was hit");
+        assert_eq!(seen[0].0, 1);
+    }
+
+    #[test]
+    fn two_topmost_children_still_resolve_topmost_first_between_themselves() {
+        // Both request priority; ordinary z-order (last-drawn-wins) still
+        // decides which of the *two* requesting children is on top.
+        let log: Log = Log::default();
+        let group = Group::new(
+            rect(0, 0, 5, 5),
+            vec![
+                Probe::new(1, rect(0, 0, 3, 3), false, &log)
+                    .topmost(true)
+                    .boxed(),
+                Probe::new(2, rect(0, 0, 3, 3), false, &log)
+                    .topmost(true)
+                    .boxed(),
+                Probe::new(3, rect(0, 0, 3, 3), false, &log).boxed(),
+            ],
+        );
+        let mut buf = Buffer::new(Size::new(5, 5));
+        let mut canvas = Canvas::new(&mut buf);
+        group.draw(&mut canvas);
+        assert_eq!(
+            buf.get(Point::new(0, 0)).unwrap().grapheme().to_string(),
+            "2",
+            "the later of the two topmost-requesting children wins"
+        );
+    }
+
+    #[test]
+    fn without_any_topmost_request_ordinary_z_order_is_unchanged() {
+        let log: Log = Log::default();
+        let group = Group::new(
+            rect(0, 0, 5, 5),
+            vec![
+                Probe::new(1, rect(0, 0, 3, 3), false, &log).boxed(),
+                Probe::new(2, rect(0, 0, 3, 3), false, &log).boxed(),
+            ],
+        );
+        let mut buf = Buffer::new(Size::new(5, 5));
+        let mut canvas = Canvas::new(&mut buf);
+        group.draw(&mut canvas);
+        assert_eq!(
+            buf.get(Point::new(0, 0)).unwrap().grapheme().to_string(),
+            "2",
+            "plain insertion-order z-order, exactly as before ADR 0030"
+        );
     }
 
     #[test]

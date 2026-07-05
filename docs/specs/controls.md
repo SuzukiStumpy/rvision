@@ -80,6 +80,11 @@ impl ListBox {
     pub fn new(bounds: Rect, items: Vec<String>, theme: &Theme) -> Self;
     pub fn selected(&self) -> Option<usize>;
     pub fn selected_text(&self) -> Option<&str>;
+    // Clears the selection outright (unlike `new`'s first-item default or
+    // `select`, which always lands on a real index) — added for
+    // `ComboBox`'s type-ahead (`combo_box.md`), which needs to show "nothing
+    // matches" rather than a construction-default row 0.
+    pub fn deselect(&mut self);
 }
 impl ListBox {
     pub fn set_bounds(&mut self, bounds: Rect);   // ADR 0017: resize, clamped+visible

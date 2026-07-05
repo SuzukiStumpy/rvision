@@ -1,0 +1,6 @@
+---
+source: src/widgets/combo_box.rs
+assertion_line: 610
+expression: render(&cb)
+---
+               ▼

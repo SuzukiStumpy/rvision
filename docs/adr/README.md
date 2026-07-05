@@ -42,5 +42,6 @@ workspace from the start, so it kept its original number unchanged.
 | [0027](0027-mouse-capture-for-drag-interactions.md) | Generic mouse capture (`Context`/`Desktop`) for continuous drag interactions, e.g. scroll-bar thumbs |
 | [0028](0028-global-keyboard-accelerator-table.md) | Global keyboard accelerator table (`Desktop`), unified with `StatusLine`'s hints |
 | [0029](0029-help-format-escape-syntax.md) | Backslash-escape syntax for the `.help` format: `\@`/`\<`/`\#`/`\{`/`\\`, `<pre>` content untouched |
+| [0030](0030-per-view-topmost-priority.md) | Per-view topmost priority for transient popups (`View::wants_topmost`), `Group`-scoped |
 
 New decision? Copy [`0000-template.md`](0000-template.md).

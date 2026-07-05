@@ -1,0 +1,9 @@
+---
+source: src/widgets/combo_box.rs
+assertion_line: 630
+expression: render(&cb)
+---
+Item3          ▲
+Item1           
+Item2           
+Item3

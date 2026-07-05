@@ -2,7 +2,7 @@
 
 - **Status:** Done; extended (Draft) for the ADR 0015/0016/0017 protocols below
 - **Phase:** 3 (View system); scroll/valid/resize protocols added post-extraction
-- **Related ADRs:** 0003 (retained tree, parent-owns-children, commands up / broadcasts down), 0004 (three-phase dispatch, `EventResult`), 0008 (owner-relative coords + `Canvas`), 0015 (scroll chrome protocol), 0016 (unify `Window`/`Dialog`, `valid` veto protocol, `Modal` trait removed), 0017 (resize propagation protocol)
+- **Related ADRs:** 0003 (retained tree, parent-owns-children, commands up / broadcasts down), 0004 (three-phase dispatch, `EventResult`), 0008 (owner-relative coords + `Canvas`), 0011 (drop shadows), 0015 (scroll chrome protocol), 0016 (unify `Window`/`Dialog`, `valid` veto protocol, `Modal` trait removed), 0017 (resize propagation protocol), 0030 (per-view topmost priority)
 
 ## Purpose
 
@@ -30,6 +30,7 @@ pub trait View {
     fn focusable(&self) -> bool { false }     // can this view hold focus?
     fn set_focused(&mut self, focused: bool) {}  // owner pushes focus (ADR 0010)
     fn drop_shadow(&self) -> Option<Style> { None }  // shadow the owner paints (ADR 0011)
+    fn wants_topmost(&self) -> bool { false }  // z-order priority over siblings (ADR 0030)
 
     // What this view needs scrolled, or None; queried every draw (ADR 0015).
     fn scroll_metrics(&self) -> Option<ScrollMetrics> { None }
@@ -76,7 +77,13 @@ impl Group {
   cannot paint outside its box (ADR 0008).
 - **Z-order.** `Group` draws children in vector order: index 0 is bottom, last is
   top; later children overwrite earlier ones where they overlap. Focus order is
-  the same vector order among `focusable` children.
+  the same vector order among `focusable` children. A child reporting
+  `wants_topmost() == true` (default `false`) is drawn after every
+  non-requesting sibling regardless of its vector position, and hit-tested
+  before them too — for a transient popup (e.g.
+  [`ComboBox`](combo_box.md)'s open drop-down) that can grow past its
+  "natural" footprint and must win against a later sibling occupying the
+  same area (ADR 0030).
 - **Drop shadows (ADR 0011).** A shadow falls *outside* a view's clipped canvas,
   so the view only *declares* it via `drop_shadow() -> Option<Style>` (default
   `None`); the owner paints `canvas.shadow(child.bounds(), style)` just before
