@@ -87,12 +87,18 @@ Open questions this raises, not yet decided:
   and isn't tracking its HEAD, so the jump doesn't force any downstream
   change. See [`docs/adr/0022-release-process-and-versioning.md`](adr/0022-release-process-and-versioning.md),
   `release-please-config.json`, and `.github/workflows/release.yml`.
-- **crates.io publishing.** Not yet published. `Cargo.toml`'s `repository`
-  field already points here; a `publish` step (gated on release-please's
-  `release_created` output, alongside a documentation pass — `cargo doc`,
-  crate-level docs) would be the remaining gap. Now that tagging/changelog
-  automation is in place (ADR 0022), this is the only piece of release
-  automation still missing.
+- ~~**crates.io publishing.**~~ Automation landed 2026-07-05 (ADR 0022
+  addendum): `.github/workflows/release.yml` gained a `publish` job gated on
+  `release-please`'s `release_created` output, running `cargo publish
+  --locked`; `Cargo.toml` gained the `readme`/`keywords`/`categories`
+  metadata crates.io needs for a listing (the crate name `rvision` itself was
+  confirmed free via the registry API). Still open, and not automatable:
+  someone with a crates.io account needs to generate an API token and add it
+  as the `CARGO_REGISTRY_TOKEN` repository secret before the next
+  release-please PR merge actually publishes anything — until then the new
+  job simply fails at that step, harmlessly (tagging/`CHANGELOG.md` are
+  unaffected). The `cargo doc`/crate-level-docs pass this bullet originally
+  bundled in stays open, tracked under roadmap item #8's closing note.
 - **A second consumer.** `edit` is still the only known consumer. Gaining a
   second consumer (or publishing) was the other named trigger for going
   independent — worth revisiting how much API stability to promise once one

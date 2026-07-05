@@ -108,3 +108,37 @@ budget (ADR 0001).
 - **Independent-versions-from-day-one workspace mode.** Not applicable —
   `rvision` was already the only crate in this repository at extraction, so
   there was never a lockstep workspace to unwind here.
+
+## Addendum (2026-07-05): crates.io publishing wired in
+
+Closes the gap the original decision deliberately left open ("Publishing to
+crates.io remains unaddressed").
+
+- **`publish` job added to `release.yml`, gated on `release_created`.**
+  Exactly the shape anticipated above: the `release-please` job gains an
+  `id: release` and exposes `release_created` as a job output; a new
+  `publish` job runs only when it's `true`, checks out the just-tagged
+  commit (the default ref for the triggering push — no separate ref
+  resolution needed), and runs `cargo publish --locked` with
+  `CARGO_REGISTRY_TOKEN` from repository secrets. An ordinary commit to
+  `main` still runs `release-please` but never touches `publish`; only
+  merging the release PR does.
+- **`CARGO_REGISTRY_TOKEN` is a manual, one-time setup step**, not something
+  this ADR can automate: create a crates.io account (GitHub OAuth login),
+  generate an API token scoped to publish-new/publish-update for `rvision`
+  under Account Settings → API Tokens, and add it as a repository secret
+  (Settings → Secrets and variables → Actions) under that exact name. Until
+  that secret exists, the `publish` job simply fails at the `cargo publish`
+  step on the next release PR merge — it does not block `release-please`
+  itself or the GitHub Release/tag.
+- **Manifest metadata needed for a listing, added to `Cargo.toml`:**
+  `readme`, `keywords` (`tui`, `terminal`, `turbovision`, `widgets`), and
+  `categories` (`command-line-interface`, `gui` — matching the precedent set
+  by comparable crates, e.g. `cursive`; `ratatui` uses
+  `command-line-interface` alone). `description`, `license`, and
+  `repository` were already present from the original cut. Crate name
+  availability was checked directly against the registry API
+  (`crates.io/api/v1/crates/rvision` → 404) rather than assumed.
+
+No change to the version/tagging decision above — this only adds the one
+remaining release step.

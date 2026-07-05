@@ -3,14 +3,14 @@
 # On every push to main, release-please reads the Conventional Commits since the
 # last release and maintains an open "release PR" that bumps Cargo.toml's version
 # (and Cargo.lock's matching entry, via the `rust` release-type) and updates
-# CHANGELOG.md. Merging that PR tags vX.Y.Z and cuts a GitHub Release.
+# CHANGELOG.md. Merging that PR tags vX.Y.Z, cuts a GitHub Release, and (via the
+# `publish` job below) publishes that exact version to crates.io.
 #
 # Unlike `edit` (a binary; see that repo's ADR 0024), there is no cross-platform
 # build/attach job here: rvision is a library with nothing to ship as a binary
-# artefact. Merging the release-please PR is the entire release act for now.
-# Publishing to crates.io is a deliberately separate, not-yet-scheduled piece
-# (see docs/roadmap.md) — add a job here gated on `release_created` when that's
-# decided.
+# artefact. `publish` is gated on release-please's own `release_created` output,
+# so an ordinary commit merged to main never triggers a publish attempt — only
+# merging the release PR itself does.
 #
 # Bootstrap (first release only): the manifest declares 0.1.0, matching the
 # existing v0.1.0 tag. The commit that lands this file carries a
@@ -30,8 +30,24 @@ permissions:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
     steps:
       - uses: googleapis/release-please-action@v4
+        id: release
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  publish:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: cargo --version
+      - name: Publish to crates.io
+        run: cargo publish --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

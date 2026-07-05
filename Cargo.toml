@@ -7,6 +7,9 @@ rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 authors = ["medwards"]
 repository = "https://github.com/SuzukiStumpy/rvision"
+readme = "README.md"
+keywords = ["tui", "terminal", "turbovision", "widgets"]
+categories = ["command-line-interface", "gui"]
 
 [dependencies]
 unicode-width = "0.2"             # cell display width (ADR 0006)
