@@ -1,6 +1,6 @@
 [package]
 name = "rvision"
-version = "2.0.0"
+version = "2.0.1"
 description = "A TurboVision-style terminal UI framework, hand-built in Rust."
 edition = "2024"
 rust-version = "1.85"
