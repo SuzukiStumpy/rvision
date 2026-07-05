@@ -175,3 +175,31 @@ including the one just published, and there is no separate stricter promise
 (e.g. a deprecation window, an LTS branch) being made beyond that. Revisit
 only if a real breaking-change incident against a downstream consumer shows
 the mechanical policy isn't enough in practice.
+
+## Addendum (2026-07-05): switched to crates.io Trusted Publishing
+
+Replaces the `CARGO_REGISTRY_TOKEN`-secret approach from the first addendum
+with OIDC-based [Trusted Publishing](https://crates.io/docs/trusted-publishing):
+GitHub Actions mints a short-lived, workflow-scoped identity token instead of
+`rvision` holding a long-lived crates.io API token as a repository secret at
+all. Only possible because the manual/token-based `v2.0.0` publish already
+happened — crates.io requires an initial conventional publish before a
+Trusted Publisher entry can be registered for a crate.
+
+- **`publish` job:** gained its own `permissions: { id-token: write, contents:
+  read }` block (job-level permissions replace the workflow-level default
+  entirely, not merge with it — this job needs neither `contents: write` nor
+  `pull-requests: write`, both of which `release-please` alone still needs at
+  the workflow level) and a `rust-lang/crates-io-auth-action@v1` step whose
+  `token` output feeds `CARGO_REGISTRY_TOKEN` for the `cargo publish` step,
+  in place of `secrets.CARGO_REGISTRY_TOKEN`.
+- **crates.io-side setup (manual, done once):** a Trusted Publisher entry
+  registered against this repository, this exact workflow filename, and no
+  `environment` (the job declares none) — done directly in the crates.io UI,
+  outside this repo, so not itself recorded here beyond this note.
+- **The old `CARGO_REGISTRY_TOKEN` repository secret and its underlying
+  crates.io API token are not yet revoked**, deliberately: the trusted-
+  publishing path is configured but unexercised by a real release as of this
+  addendum (the workflow change landed after `v2.0.0` was already out). Revoke
+  both only after the next release-please PR merge proves the new path end to
+  end — reverting to the old step is the fallback if it doesn't.

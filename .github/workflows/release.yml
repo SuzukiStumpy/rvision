@@ -43,11 +43,16 @@ jobs:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      id-token: write # required to mint the OIDC token crates-io-auth-action exchanges
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - name: Install pinned toolchain
         run: cargo --version
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
       - name: Publish to crates.io
         run: cargo publish --locked
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
