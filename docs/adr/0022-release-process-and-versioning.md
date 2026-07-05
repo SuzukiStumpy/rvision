@@ -142,3 +142,36 @@ crates.io remains unaddressed").
 
 No change to the version/tagging decision above — this only adds the one
 remaining release step.
+
+## Addendum (2026-07-05): first real publish, and the API-stability question closed
+
+The `CARGO_REGISTRY_TOKEN` secret above was added the same day, and the very
+next release-please PR merge (#4) exercised the whole pipeline for real, not
+just in review: it tagged `v2.0.0`, and the `publish` job packaged, verified,
+uploaded, and published `rvision v2.0.0` to crates.io without any manual
+step — confirmed live via the registry API afterwards.
+
+This also closes the roadmap's long-open "second consumer" question about how
+much API-stability to promise once one exists (see roadmap.md, "Now that
+`rvision` is standalone"). Two things line up to close it, not just one:
+
+- **The trigger has now genuinely fired.** `edit` depended on `rvision`
+  through a pinned git reference, insulated from any breakage; a published
+  crate is not — anyone can `cargo add rvision` today, so the semver promise
+  this ADR made at the `v1.0.0` cut is no longer a formality, it is a live
+  commitment to real strangers.
+- **The discipline was already being honoured before publishing made it
+  matter.** The jump from `v1.1.0` to `v2.0.0` was not a manual decision —
+  it fell out of `release-please` reading a `feat!:` commit (ADR 0028's
+  global keyboard accelerator table) as a breaking change and bumping the
+  major version automatically, exactly per this ADR's original design.
+  There is no daylight between the promise ("breaking changes bump major")
+  and the practice (a real breaking change already did, before there was
+  any external consumer relying on it) to reconcile.
+
+Nothing further to decide here: the policy is "ordinary semver, derived
+mechanically from Conventional Commits," it already governs every release
+including the one just published, and there is no separate stricter promise
+(e.g. a deprecation window, an LTS branch) being made beyond that. Revisit
+only if a real breaking-change incident against a downstream consumer shows
+the mechanical policy isn't enough in practice.

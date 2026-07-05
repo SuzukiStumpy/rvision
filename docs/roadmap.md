@@ -92,21 +92,25 @@ Open questions this raises, not yet decided:
   `release-please`'s `release_created` output, running `cargo publish
   --locked`; `Cargo.toml` gained the `readme`/`keywords`/`categories`
   metadata crates.io needs for a listing (the crate name `rvision` itself was
-  confirmed free via the registry API). Still open, and not automatable:
-  someone with a crates.io account needs to generate an API token and add it
-  as the `CARGO_REGISTRY_TOKEN` repository secret before the next
-  release-please PR merge actually publishes anything — until then the new
-  job simply fails at that step, harmlessly (tagging/`CHANGELOG.md` are
-  unaffected). The `cargo doc`/crate-level-docs pass this bullet originally
+  confirmed free via the registry API). Exercised for real the same day: the
+  release-please PR merge that followed (#4) tagged `v2.0.0`, and the
+  `publish` job packaged, verified, uploaded, and published `rvision v2.0.0`
+  to crates.io end to end with no manual step, confirmed live via the
+  registry API. The `cargo doc`/crate-level-docs pass this bullet originally
   bundled in stays open, tracked under roadmap item #8's closing note.
-- **A second consumer.** `edit` is still the only known consumer. Gaining a
-  second consumer (or publishing) was the other named trigger for going
-  independent — worth revisiting how much API stability to promise once one
-  exists, since today the API can move freely to suit `edit` alone. `v1.0.0`
-  has now been cut (ADR 0022) on the strength of `edit`'s pinned dependency
-  not being exposed to breakage; this question is now specifically about how
-  that ongoing stability promise shapes future changes, not about whether the
-  initial commitment was premature.
+- ~~**A second consumer.**~~ Closed 2026-07-05 (ADR 0022's second addendum),
+  not by gaining a second named consumer — `edit` is still the only one
+  *known* — but because publishing (the bullet's own named alternative
+  trigger) has now happened: `rvision v2.0.0` is a real public crate, so the
+  API-stability question stopped being hypothetical the moment it went live.
+  It resolves cleanly rather than opening a new debate: the `v1.1.0` →
+  `v2.0.0` jump that shipped it was itself a breaking-change major bump,
+  derived mechanically by `release-please` from a `feat!:` commit (ADR
+  0028), with no manual stability call involved — the "ordinary semver,
+  mechanically derived" policy ADR 0022 committed to at the `v1.0.0` cut was
+  already being honoured before there was anyone outside `edit` for it to
+  matter to. Nothing further to decide unless a real incident against a
+  downstream consumer shows that mechanical policy isn't enough in practice.
 - **Apple Silicon macOS verification.** `edit`'s Phase 10 exit criteria left
   this "pending hardware" — CI builds it, but no manual terminal-quirk pass has
   happened on that platform. Still open, low urgency, blocks nothing.
