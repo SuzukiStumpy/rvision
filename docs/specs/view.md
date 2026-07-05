@@ -2,7 +2,7 @@
 
 - **Status:** Done; extended (Draft) for the ADR 0015/0016/0017 protocols below
 - **Phase:** 3 (View system); scroll/valid/resize protocols added post-extraction
-- **Related ADRs:** 0003 (retained tree, parent-owns-children, commands up / broadcasts down), 0004 (three-phase dispatch, `EventResult`), 0008 (owner-relative coords + `Canvas`), 0011 (drop shadows), 0015 (scroll chrome protocol), 0016 (unify `Window`/`Dialog`, `valid` veto protocol, `Modal` trait removed), 0017 (resize propagation protocol), 0030 (per-view topmost priority)
+- **Related ADRs:** 0003 (retained tree, parent-owns-children, commands up / broadcasts down), 0004 (three-phase dispatch, `EventResult`), 0008 (owner-relative coords + `Canvas`), 0011 (drop shadows), 0015 (scroll chrome protocol), 0016 (unify `Window`/`Dialog`, `valid` veto protocol, `Modal` trait removed), 0017 (resize propagation protocol), 0030 (per-view topmost priority), 0031 (non-wrapping nested focus groups)
 
 ## Purpose
 
@@ -63,10 +63,15 @@ impl<'a> Context<'a> {
 pub struct StaticText { /* bounds, text, style */ }
 impl StaticText { pub fn new(bounds: Rect, text: &str, style: Style) -> Self; }
 
-pub struct Group { /* bounds, Vec<Box<dyn View>>, focused: Option<usize> */ }
+pub struct Group { /* bounds, Vec<Box<dyn View>>, focused: Option<usize>, wraps: bool */ }
 impl Group {
-    pub fn new(bounds: Rect, children: Vec<Box<dyn View>>) -> Self; // focuses first focusable
+    pub fn new(bounds: Rect, children: Vec<Box<dyn View>>) -> Self; // focuses first focusable; wraps == true
     pub fn focused(&self) -> Option<usize>;
+    // Opts out of wrapping Tab/Shift-Tab at the ends (ADR 0031): a boundary
+    // Tab is left `Ignored` instead of consumed-and-wrapped, so it escapes to
+    // whatever owns this group's dispatch — for a `Group` nested as one child
+    // inside another `Group` (e.g. `GroupBox`'s interior, `group_box.md`).
+    pub fn non_wrapping(self) -> Self;
 }
 ```
 
@@ -97,9 +102,17 @@ impl Group {
     siblings).
   - *Focused* (`Key`, `Command`): delivered to the focused child first. If the
     child ignores a `Tab`/`BackTab`, the group advances/retreats its own focus
-    (wrapping among focusable children) and consumes it. Any other ignored event
-    returns `Ignored` so it bubbles up the owner chain — that unwinding *is* the
-    bubble (ADR 0003).
+    among focusable children and consumes it. By default (`wraps == true`,
+    every existing caller) this wraps at the ends, exactly as before. A group
+    built with [`non_wrapping`](#public-interface) (ADR 0031) instead reports
+    a *boundary* Tab/Shift-Tab (one that would otherwise wrap) as `Ignored`,
+    changing nothing about its own focus — letting it bubble up the owner
+    chain so an *outer* group's own traversal decides where focus goes next,
+    the same unwinding any other ignored event uses (ADR 0003). Moving between
+    two focusable children that aren't at the boundary yet is unaffected
+    either way — still consumed, still a purely internal move. Any other
+    ignored event returns `Ignored` so it bubbles up the owner chain — that
+    unwinding *is* the bubble (ADR 0003).
   - *Broadcast* (`Broadcast`, `Resize`, `Idle`): delivered to **all** children;
     the group returns `Ignored` (broadcasts don't stop).
 - **`valid` fans out to every child, not just the focused one** (ADR 0016,
@@ -140,6 +153,11 @@ impl Group {
 - **Interaction:** `Tab`/`BackTab` cycle focus among focusable children (skipping
   `StaticText`), wrapping at the ends; the focused child receives keys; a command
   a child posts appears in `Context` and (when the child ignores it) bubbles up.
+  **Non-wrapping (ADR 0031):** a `non_wrapping` group with one focusable child
+  reports a boundary Tab/Shift-Tab as `Ignored` without moving focus; one with
+  several still cycles internally (`Consumed`) until it hits a boundary, only
+  then reporting `Ignored`; a plain (default) group is unaffected — it still
+  wraps and still consumes.
 - **`valid` fan-out:** a `Group` of all-default children reports `valid` as
   `true`; one refusing child makes the whole `Group` refuse, regardless of
   which child is focused; every child is asked (not just the first refusal
@@ -170,7 +188,12 @@ impl Group {
   delegation).
 - **Integer view IDs** (ADR 0003) for targeted messages: not needed for bubbling
   or Tab traversal; add when a command must address a specific view.
-- **Cross-group Tab boundary**: focus currently wraps within a group; handing off
-  to the parent at the boundary is a Phase 4/5 refinement.
+- ~~**Cross-group Tab boundary**: focus currently wraps within a group; handing off
+  to the parent at the boundary is a Phase 4/5 refinement.~~ Resolved by ADR
+  0031: `Group::non_wrapping()` opts a nested group (e.g. `GroupBox`'s
+  interior) out of wrapping, so a boundary Tab/Shift-Tab escapes to the owning
+  group's own traversal instead — surfaced by, and landed alongside,
+  [`GroupBox`](group_box.md). Every group with the default `wraps == true`
+  (every prior caller) is unaffected.
 - **Theme threading** into `draw`: `StaticText` takes a concrete `Style` for now;
   resolving a `Role` against a `Theme` at draw time arrives with the chrome.

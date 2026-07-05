@@ -9,7 +9,8 @@
 //!   a [`Desktop`] or modally via
 //!   [`Application::exec_view`](crate::app::Application::exec_view), holding the
 //!   focusable controls [`Button`], [`Label`], [`InputLine`], [`CheckBox`],
-//!   [`RadioButtons`], [`ListBox`], and [`ScrollBar`]. Focus-aware drawing is the
+//!   [`RadioButtons`], [`ListBox`], [`ScrollBar`], and [`GroupBox`] (a titled
+//!   border grouping a `Group` of them). Focus-aware drawing is the
 //!   `set_focused` push (ADR 0010).
 //!
 //! All are reusable and editor-agnostic; the editor view itself arrives in Phase 6.
@@ -23,6 +24,7 @@ mod context_menu;
 mod desktop;
 mod file_dialog;
 mod frame;
+mod group_box;
 mod help_pane;
 mod help_window;
 mod input_line;
@@ -48,6 +50,7 @@ pub(crate) use context_menu::ContextMenu;
 pub use desktop::{Desktop, WindowId};
 pub use file_dialog::{FileDialog, FileDialogResult};
 pub use frame::Frame;
+pub use group_box::GroupBox;
 pub use help_pane::HelpPane;
 pub use help_window::HelpWindow;
 pub use input_line::InputLine;

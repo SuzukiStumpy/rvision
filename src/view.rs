@@ -327,6 +327,7 @@ pub struct Group {
     bounds: Rect,
     children: Vec<Box<dyn View>>,
     focused: Option<usize>,
+    wraps: bool,
 }
 
 impl Group {
@@ -342,7 +343,23 @@ impl Group {
             bounds,
             children,
             focused,
+            wraps: true,
         }
+    }
+
+    /// Opts this group out of wrapping its own Tab/Shift-Tab traversal at the
+    /// ends (ADR 0031): instead of cycling back to its first/last focusable
+    /// child, a boundary Tab reports `Ignored` so it escapes to whatever owns
+    /// this group's own dispatch — for a `Group` embedded as one child inside
+    /// another `Group` (e.g. [`GroupBox`](crate::widgets::GroupBox)'s
+    /// interior), so the *outer* group's traversal decides where focus goes
+    /// once this nested group's own stops are exhausted, rather than this
+    /// group wrapping locally and swallowing the Tab. A top-level dialog
+    /// `Group` (the common case, with no owning `Group` above it) leaves
+    /// wrapping on — the default `Group::new` gives every existing caller.
+    pub fn non_wrapping(mut self) -> Self {
+        self.wraps = false;
+        self
     }
 
     /// The index of the currently focused child, if any.
@@ -453,8 +470,11 @@ impl Group {
     }
 
     /// Advances (or, if `!forward`, retreats) focus to the next focusable child,
-    /// wrapping at the ends. Consumes the event, or ignores it if no child can
-    /// take focus.
+    /// wrapping at the ends unless [`non_wrapping`](Self::non_wrapping) opted
+    /// this group out (ADR 0031) — in which case a boundary Tab/Shift-Tab (one
+    /// that would otherwise wrap) is left `Ignored` instead, so it escapes to
+    /// whatever owns this group's own dispatch. Consumes the event, or ignores
+    /// it if no child can take focus.
     fn move_focus(&mut self, forward: bool) -> EventResult {
         let focusable: Vec<usize> = (0..self.children.len())
             .filter(|&i| self.children[i].focusable())
@@ -466,6 +486,15 @@ impl Group {
             .focused
             .and_then(|f| focusable.iter().position(|&i| i == f));
         let len = focusable.len();
+        if !self.wraps {
+            let at_boundary = match current {
+                Some(p) => (forward && p + 1 == len) || (!forward && p == 0),
+                None => false,
+            };
+            if at_boundary {
+                return EventResult::Ignored;
+            }
+        }
         let next = match current {
             Some(p) if forward => (p + 1) % len,
             Some(p) => (p + len - 1) % len,
@@ -875,6 +904,82 @@ mod tests {
         assert_eq!(
             group.handle_event(&key(KeyCode::Tab), &mut ctx),
             EventResult::Ignored
+        );
+    }
+
+    // --- Non-wrapping (nested-scope) Tab boundary (ADR 0031) ---
+
+    #[test]
+    fn a_non_wrapping_group_with_one_focusable_child_ignores_boundary_tab() {
+        // Reproduces the bug a `GroupBox` with a single focusable child (one
+        // `RadioButtons`) hit when embedded in an outer `Group`: an ordinary
+        // wrapping group would treat Tab as "wrap back to myself" and consume
+        // it, swallowing the keypress so it could never reach a sibling past
+        // the group box.
+        let log: Log = Log::default();
+        let mut group = Group::new(
+            rect(0, 0, 20, 10),
+            vec![Probe::new(1, rect(0, 0, 5, 1), true, &log).boxed()],
+        )
+        .non_wrapping();
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+
+        assert_eq!(group.focused(), Some(0));
+        assert_eq!(
+            group.handle_event(&key(KeyCode::Tab), &mut ctx),
+            EventResult::Ignored,
+            "a lone focusable child is always at the boundary in both directions"
+        );
+        assert_eq!(group.focused(), Some(0), "focus did not move");
+        assert_eq!(
+            group.handle_event(&key(KeyCode::BackTab), &mut ctx),
+            EventResult::Ignored
+        );
+    }
+
+    #[test]
+    fn a_non_wrapping_group_still_cycles_internally_before_the_boundary() {
+        let log: Log = Log::default();
+        let mut group = Group::new(
+            rect(0, 0, 20, 10),
+            vec![
+                Probe::new(1, rect(0, 0, 5, 1), true, &log).boxed(),
+                Probe::new(2, rect(0, 1, 5, 1), true, &log).boxed(),
+            ],
+        )
+        .non_wrapping();
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+
+        assert_eq!(group.focused(), Some(0));
+        assert_eq!(
+            group.handle_event(&key(KeyCode::Tab), &mut ctx),
+            EventResult::Consumed,
+            "moving to the second child is still a normal, internal move"
+        );
+        assert_eq!(group.focused(), Some(1));
+        assert_eq!(
+            group.handle_event(&key(KeyCode::Tab), &mut ctx),
+            EventResult::Ignored,
+            "now at the last child, forward Tab escapes instead of wrapping"
+        );
+        assert_eq!(group.focused(), Some(1), "focus stayed put, not wrapped");
+    }
+
+    #[test]
+    fn a_wrapping_group_is_the_default_and_unaffected() {
+        let log: Log = Log::default();
+        let mut group = Group::new(
+            rect(0, 0, 20, 10),
+            vec![Probe::new(1, rect(0, 0, 5, 1), true, &log).boxed()],
+        );
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert_eq!(
+            group.handle_event(&key(KeyCode::Tab), &mut ctx),
+            EventResult::Consumed,
+            "plain Group::new still wraps a lone focusable child to itself"
         );
     }
 

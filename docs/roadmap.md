@@ -563,6 +563,47 @@ retired in favour of a fresh roadmap with proper phases/milestones.
        z-order fix (an OK/Cancel row the filtering combo's drop-down
        actually reaches, now drawn under it and still receiving its clicks
        correctly) and the `esc_cancels` composition note.
+   - ~~Group box.~~ Landed 2026-07-05:
+     [`widgets::GroupBox`](../src/widgets/group_box.rs) — see
+     [`docs/specs/group_box.md`](specs/group_box.md). A titled single-line
+     border owning a real `Group` of children, reusing `Window`'s existing
+     "bordered box wrapping an interior" composition (ADR 0016) rather than
+     inventing a second one: `GroupBox`'s own code is just the border/title
+     drawing plus the one translate-into-an-inset-interior step, specialised
+     to an interior that's always a `Group` of children instead of any
+     single `View`. The title sits left-aligned on the top edge
+     (`┌ Title ────┐`), unlike `Frame`'s centred window title — a narrow
+     group box reads better with the label anchored at a fixed spot than
+     centred under a title bar. Border and title both resolve
+     `Role::DialogBackground`, the same role `RadioButtons`/`CheckBox`/
+     `Label` already use for their own body text, so no new theme role was
+     needed. Manual pass: the `dialogs` example's Settings dialog now wraps
+     its "Line endings" `RadioButtons` in a `GroupBox` (replacing the plain
+     `Label` above it) — run in a real terminal (tmux), the border/title
+     drew correctly and arrows still drove the radio group exactly as
+     before.
+     - The same manual pass surfaced a real gap, not just confirmed the
+       widget: once `Tab` reached the group box, it could never leave —
+       swallowed forever, so the OK/Cancel buttons laid out after it were
+       unreachable by keyboard. Root cause: `Group::move_focus` treats "no
+       further focusable child in this direction" as "wrap back to
+       whichever end is next" and consumes the key unconditionally — correct
+       for a top-level dialog `Group` (nothing owns it to hand off to), but
+       wrong once a `Group` is nested *inside* another `Group` for focus
+       purposes, which `GroupBox`'s interior is the first widget to do; with
+       only one focusable child (a lone `RadioButtons`, this widget's whole
+       motivating case), every Tab "wraps" to that same child and never
+       escapes. Fixed by ADR 0031: `Group::non_wrapping()`, a per-instance
+       opt-out (default unchanged — every existing top-level `Group` still
+       wraps) that reports a *boundary* Tab/Shift-Tab as `Ignored` instead of
+       consuming and wrapping, letting it bubble to whatever `Group` owns
+       this one exactly the way any other ignored key already does (ADR
+       0003) — no new event or protocol, just `Group` finally using the
+       `Ignored`/`Consumed` distinction it already had for this case too.
+       `GroupBox`'s interior opts in; resolves `view.md`'s long-standing open
+       "cross-group Tab boundary" question. Re-confirmed in the same tmux
+       session: `Tab` now reaches OK/Cancel past the box, `Shift-Tab` returns
+       to it.
 7. ~~**Insert/overtype support** for text entry controls.~~ Landed
    2026-07-03: `InputLine` gained an `overtype: bool` field (default off,
    matching TurboVision); `KeyCode::Insert` toggles it. While on, a

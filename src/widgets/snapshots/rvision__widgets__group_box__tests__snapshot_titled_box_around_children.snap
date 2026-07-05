@@ -1,0 +1,9 @@
+---
+source: src/widgets/group_box.rs
+assertion_line: 212
+expression: "render(&gb, 16, 4)"
+---
+┌ Alignment ───┐
+│(•) Left      │
+│              │
+└──────────────┘

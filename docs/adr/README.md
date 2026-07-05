@@ -43,5 +43,6 @@ workspace from the start, so it kept its original number unchanged.
 | [0028](0028-global-keyboard-accelerator-table.md) | Global keyboard accelerator table (`Desktop`), unified with `StatusLine`'s hints |
 | [0029](0029-help-format-escape-syntax.md) | Backslash-escape syntax for the `.help` format: `\@`/`\<`/`\#`/`\{`/`\\`, `<pre>` content untouched |
 | [0030](0030-per-view-topmost-priority.md) | Per-view topmost priority for transient popups (`View::wants_topmost`), `Group`-scoped |
+| [0031](0031-non-wrapping-nested-focus-groups.md) | Non-wrapping nested focus groups (`Group::non_wrapping`): a boundary Tab escapes to the owning group instead of wrapping locally |
 
 New decision? Copy [`0000-template.md`](0000-template.md).

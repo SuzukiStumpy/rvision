@@ -5,9 +5,10 @@
 //!
 //! 1. a welcome message box (`Enter`/`Esc`);
 //! 2. a *Settings* dialog exercising every control — an input line, a check box,
-//!    a radio group, and OK/Cancel buttons. `Tab`/`Shift-Tab` move focus, the
-//!    arrows drive the radio group and (when focused) the input caret, `Space`
-//!    toggles the check box, `Enter` is the default *OK*, `Esc` cancels;
+//!    a radio group inside a titled `GroupBox`, and OK/Cancel buttons.
+//!    `Tab`/`Shift-Tab` move focus, the arrows drive the radio group and
+//!    (when focused) the input caret, `Space` toggles the check box, `Enter`
+//!    is the default *OK*, `Esc` cancels;
 //! 3. a file *Open* dialog — type a name or pick from the list; `Enter` on a
 //!    folder navigates into it, `Enter` on a file (or *Open*) accepts;
 //! 4. a colour picker (`docs/specs/color_picker.md`) seeded at Cyan — arrows
@@ -35,7 +36,8 @@ use rvision::geometry::{Point, Rect, Size};
 use rvision::theme::{Role, Theme};
 use rvision::view::{Group, View};
 use rvision::widgets::{
-    Button, CheckBox, ColorPicker, FileDialog, InputLine, Label, MessageBox, RadioButtons, Window,
+    Button, CheckBox, ColorPicker, FileDialog, GroupBox, InputLine, Label, MessageBox,
+    RadioButtons, Window,
 };
 
 fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
@@ -75,10 +77,14 @@ fn settings_dialog(theme: &Theme) -> Window {
         Box::new(Label::new(rect(1, 1, 8, 1), "Name:", theme)),
         Box::new(InputLine::new(rect(9, 1, 22, 1), theme).with_text("untitled.txt")),
         Box::new(CheckBox::new(rect(1, 3, 28, 1), "Word wrap", theme).with_checked(true)),
-        Box::new(Label::new(rect(1, 5, 14, 1), "Line endings:", theme)),
-        Box::new(RadioButtons::new(
-            rect(1, 6, 16, 3),
-            &["Unix (LF)", "DOS (CRLF)", "Mac (CR)"],
+        Box::new(GroupBox::new(
+            rect(1, 5, 20, 5),
+            "Line endings",
+            vec![Box::new(RadioButtons::new(
+                rect(1, 0, 16, 3),
+                &["Unix (LF)", "DOS (CRLF)", "Mac (CR)"],
+                theme,
+            ))],
             theme,
         )),
         Box::new(Button::new(rect(8, 10, 10, 1), "OK", CM_OK, theme).default(true)),
