@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/SuzukiStumpy/rvision/compare/v2.0.0...v2.0.1) (2026-07-05)
+
+
+### Bug Fixes
+
+* stop linking public docs to private items ([8edc51d](https://github.com/SuzukiStumpy/rvision/commit/8edc51dc2c40ee3a0c321ac3edb2468021a93581))
+
 ## [2.0.0](https://github.com/SuzukiStumpy/rvision/compare/v1.1.0...v2.0.0) (2026-07-05)
 
 
