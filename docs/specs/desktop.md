@@ -6,7 +6,7 @@
   (mouse), 0009 (`Shell`), 0003/0004 (tree + dispatch), 0027 (generic mouse
   capture for continuous drag interactions), 0028 (global keyboard
   accelerator table), 0033 (shared `arrange` geometry: chrome hit-testing,
-  drag sessions, cascade/tile)
+  drag sessions, cascade/tile), 0034 (`topmost`-pinned windows)
 
 ## Purpose
 
@@ -66,14 +66,16 @@ impl Desktop {
     /// keyboard equivalent of click-to-front (`CM_NEXT`/`CM_PREV`, below).
     pub fn cycle_focus(&mut self, forward: bool);
 
-    /// Repositions every visible, non-maximized window into a cascade
-    /// (`arrange::cascade_slot`, ADR 0033), in current stack order. Z-order
-    /// and the active window are unchanged — only bounds move.
+    /// Repositions every visible, non-maximized, arrangeable window into a
+    /// cascade (`arrange::cascade_slot`, ADR 0033), in current stack order —
+    /// resized to its slot if `resizable`, moved to the slot's origin but
+    /// kept its own size otherwise. Z-order and the active window are
+    /// unchanged — only bounds move.
     pub fn cascade(&mut self);
 
-    /// Repositions every visible, non-maximized window into an even grid
-    /// filling the desktop (`arrange::tile`, ADR 0033). Same exclusions as
-    /// `cascade`.
+    /// Repositions every visible, non-maximized, arrangeable window into an
+    /// even grid filling the desktop (`arrange::tile`, ADR 0033). Same
+    /// exclusions and resizable/non-resizable distinction as `cascade`.
     pub fn tile(&mut self);
 
     pub fn active_id(&self) -> Option<WindowId>;
@@ -94,14 +96,18 @@ post any of the four directly — `Desktop` is what gives them effect.
 ## Behaviour & invariants
 
 - **Z-order / visibility.** Windows are stored bottom-to-top as today; the
-  active window is always the topmost **visible** one. Any operation that
-  raises a window (`open`, `show`, `focus`, `cycle_focus`, click-to-front)
-  physically moves it to the end of the stack, so draw order stays a true
-  z-order regardless of hidden windows interleaved earlier in it. `draw`,
-  positional hit-testing, and keyboard dispatch-if-active all skip a window
-  with `!is_visible()` outright (ADR 0016); broadcast/resize still reach
-  every window, hidden or not, so a hidden window's state stays current for
-  when it's shown again.
+  active window is the topmost **visible, ordinary** one (see `topmost`
+  below — ADR 0034 changes what "topmost" means for picking a fallback
+  active window, not for draw order). Any operation that raises a window
+  (`open`, `show`, `focus`, `cycle_focus`, click-to-front) physically moves
+  it to the end of its own tier of the stack — the true end if it's
+  `topmost`, otherwise just below the first `topmost` entry — so `self`'s
+  vec order always doubles as the complete, literal z-order for drawing and
+  hit-testing, regardless of hidden windows interleaved earlier in it.
+  `draw`, positional hit-testing, and keyboard dispatch-if-active all skip a
+  window with `!is_visible()` outright (ADR 0016); broadcast/resize still
+  reach every window, hidden or not, so a hidden window's state stays
+  current for when it's shown again.
 - **Hiding the active window** transfers active to the next visible window in
   stack order (or `None`), the same bookkeeping `close` needs, without
   removing the window or invalidating its `WindowId`.
@@ -120,6 +126,24 @@ post any of the four directly — `Desktop` is what gives them effect.
   otherwise acted on — this never fires while a modal `exec_view` is running,
   since `Desktop` receives no events at all then (already true today; no new
   mechanism needed).
+- **`topmost`-pinned windows (ADR 0034).** A `Window::topmost(true)` window
+  (a docked toolbox) is kept above every non-`topmost` window regardless of
+  raise/click-to-front order: `raise` sends a `topmost` window to the true
+  end of the stack, and any *other* (non-`topmost`) window it raises only as
+  far as just below the first `topmost` entry, never past it. This is purely
+  about z-order, not about stealing focus: raising a window — `topmost` or
+  not — still always makes *it* the active one (a direct click on the
+  toolbox activates it exactly like any other window would); what changes is
+  only the two places that otherwise *guess* which window should become
+  active next:
+  - **`activate_topmost_visible`** (the `close`/`hide` fallback) prefers the
+    topmost visible *ordinary* window, falling back to a `topmost` one only
+    when nothing ordinary is left visible — so closing/hiding some other
+    window never silently hands focus to a pinned toolbox sitting above it.
+  - **`cycle_focus`** (`CM_NEXT`/`CM_PREV`) excludes `topmost` windows from
+    its candidates entirely, the same way `cascade`/`tile` exclude non-
+    `arrangeable` ones — a pinned utility panel isn't one of "the windows"
+    Tab-style cycling is meant to step through.
 - **Drag/resize sessions**, owned by `Desktop` directly — mirroring how
   `MenuBar` owns its own open/closed state machine across a sequence of
   events, rather than each event being handled statelessly. The
@@ -149,10 +173,18 @@ post any of the four directly — `Desktop` is what gives them effect.
     progress makes `Desktop` ignore new `Down` events until it ends (matches
     single-pointer terminal input; no multi-touch to arbitrate).
 - **Cascade/tile** (ADR 0033): `cascade`/`tile` reposition every currently
-  visible, non-maximized window (`arrange::cascade_slot`/`arrange::tile`) in
-  current stack order; a maximized window already fills the desktop and is
-  left untouched rather than force-restored, and a hidden window is skipped.
-  Neither touches z-order or the active window — only bounds move. Plain
+  visible, non-maximized, *arrangeable* window (`arrange::cascade_slot`/
+  `arrange::tile`) in current stack order; a maximized window already fills
+  the desktop and is left untouched rather than force-restored, a hidden
+  window is skipped, and a non-`arrangeable` window (a docked toolbox) is
+  skipped too — entirely untouched, not repositioned or resized, regardless
+  of visibility. A skipped window's slot in the cascade/tile sequence isn't
+  reserved either: the remaining arrangeable windows lay out as if it were
+  never open at all. Among the windows that do participate, a non-`resizable`
+  one is moved to its computed slot's *origin* but keeps its own current
+  size rather than being resized to fill the slot — `resizable` means
+  "nobody changes my size," not just "no interactive corner-drag." Neither
+  operation touches z-order or the active window — only bounds move. Plain
   methods, not framework `Command`s — matching `open`/`hide`/`show`/`focus`'s
   existing precedent that an operation needing no target-window data beyond
   what's already on `self` doesn't need to travel as a bubbled `Command`.
@@ -216,8 +248,10 @@ post any of the four directly — `Desktop` is what gives them effect.
   on the active window transfers active to the next visible window in stack
   order; `hide`/`show` toggle visibility and reassign active correctly; an
   unknown `WindowId` is a safe no-op everywhere; `cascade`/`tile` position
-  visible windows per `arrange::cascade_slot`/`arrange::tile`, skip hidden
-  and maximized windows, and leave z-order/the active window untouched.
+  visible windows per `arrange::cascade_slot`/`arrange::tile`, skip hidden,
+  maximized, and non-`arrangeable` windows (without reserving those a slot),
+  keep a non-`resizable` window's own size while still moving it to its
+  slot's origin, and leave z-order/the active window untouched.
 - **Render (snapshot):** a hidden window is not drawn (no shadow, no chrome)
   even though it is still resident; z-order after a `focus`/`cycle_focus`
   raise matches the new stack order.
@@ -234,15 +268,23 @@ post any of the four directly — `Desktop` is what gives them effect.
   accelerator and posts its command, the active window's own handling always
   wins over one bound to the same key, an accelerator fires with no active
   window, and an unbound key with no active claim still bubbles `Ignored`
-  (ADR 0028).
+  (ADR 0028); a `topmost` window stays hit-testable above an ordinary one
+  even after that ordinary window is raised, and raising one `topmost`
+  window still moves it above another `topmost` one (ADR 0034); closing/
+  hiding the active window falls back to the topmost visible *ordinary*
+  window over a `topmost` one, falling back further to a `topmost` window
+  only when nothing ordinary is left visible; `CM_NEXT`/`CM_PREV` skip
+  `topmost` windows entirely when cycling.
 - **End-to-end (through `Application`):** opening a window via `desktop_mut().open(...)`
   from application code between `run` turns shows it on the next draw;
   `exec_view` run over a `Shell` with open desktop windows leaves them
   resident and unresponsive until the modal returns (background draws, no
   events reach them).
 - **Manual:** a `desktop`/`mdi` example — open several windows, drag, resize,
-  close, cycle with `CM_NEXT`, hide/show a toolbox-style window from a menu
-  command, cascade and tile from a menu command.
+  close, cycle with `CM_NEXT`, hide/show a `topmost`, non-`arrangeable`
+  toolbox-style window from a menu command (staying visually on top of, and
+  never swept into a cascade/tile with, the document windows), cascade and
+  tile from a menu command.
 
 ## Open questions
 

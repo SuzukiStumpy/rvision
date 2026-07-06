@@ -32,6 +32,20 @@ application that wants *no* frame/chrome at all can also skip `Window`/
 — exactly what `edit` already does for unrelated reasons (its own ADR 0018)
 — untouched by anything in ADR 0016.
 
+**`arrangeable`/`topmost` are a different axis from the four above**: they
+say nothing about what a *user* can interactively do to the window (drag,
+resize, click a glyph) — they gate what `Desktop`'s own bulk/automatic
+behaviour does to it. `arrangeable` (default `true`, ADR 0033) is whether
+`Desktop::cascade`/`Desktop::tile` may touch this window's position (and, if
+also `resizable`, its size) at all; `topmost` (default `false`, ADR 0034) is
+whether `Desktop` keeps it pinned above every non-`topmost` window regardless
+of raise/click-to-front order, and skips it as a `cycle_focus` candidate and
+as the close/hide fallback active window. A docked, fixed-position toolbox
+sets both — `arrangeable(false)` so it's never swept into a cascade/tile
+layout, `topmost(true)` so document windows never cover it — while staying
+just as `moveable`/`resizable`/`closable`/`zoomable` (or not) as any other
+window on those four, independent axes.
+
 ## Public interface
 
 ```rust
@@ -51,6 +65,8 @@ pub struct Window {
     moveable: bool,
     closable: bool,
     zoomable: bool,
+    arrangeable: bool,                 // ADR 0033: eligible for Desktop::cascade/tile at all
+    topmost: bool,                     // ADR 0034: Desktop keeps this pinned above ordinary windows
     help_topic: Option<String>,        // ADR 0021: opaque HelpContents topic id
     placement: Placement,
     ending: Vec<Command>,
@@ -69,6 +85,8 @@ impl Window {
     pub fn moveable(self, yes: bool) -> Self;
     pub fn closable(self, yes: bool) -> Self;
     pub fn zoomable(self, yes: bool) -> Self;
+    pub fn arrangeable(self, yes: bool) -> Self;      // ADR 0033, default true
+    pub fn topmost(self, yes: bool) -> Self;          // ADR 0034, default false
     pub fn centered(self) -> Self;                    // placement = Centered
     pub fn with_default(self, command: Command) -> Self;
     pub fn also_ends_on(self, command: Command) -> Self;
@@ -81,6 +99,12 @@ impl Window {
     pub fn is_active(&self) -> bool;
     pub fn is_visible(&self) -> bool;
     pub fn is_maximized(&self) -> bool;
+    pub fn is_resizable(&self) -> bool;
+    pub fn is_moveable(&self) -> bool;
+    pub fn is_closable(&self) -> bool;
+    pub fn is_zoomable(&self) -> bool;
+    pub fn is_arrangeable(&self) -> bool;              // ADR 0033
+    pub fn is_topmost(&self) -> bool;                  // ADR 0034
     pub fn placement(&self) -> Placement;
     pub fn help_topic(&self) -> Option<&str>;          // ADR 0021
 
@@ -235,10 +259,13 @@ impl FileDialogResult {
 
 ## Test plan (write these first)
 
-- **Logic:** default flags from `Window::new`; builder toggles; `ends_on`
-  covers `ending` plus additions; `toggle_zoom` round-trips bounds and shadow;
-  `hide`/`show` toggle `is_visible` (raising is `Desktop`'s test, not this
-  one).
+- **Logic:** default flags from `Window::new`, including `arrangeable`
+  defaulting `true` and `topmost` defaulting `false`; builder toggles for all
+  six flags; `ends_on` covers `ending` plus additions; `toggle_zoom`
+  round-trips bounds and shadow; `hide`/`show` toggle `is_visible` (raising,
+  and what `arrangeable`/`topmost` actually change about `Desktop`'s own
+  behaviour, are `Desktop`'s tests, not this one — see
+  [`desktop.md`](desktop.md)).
 - **Render (snapshot):** close/zoom glyphs present/absent per flag; help
   glyph present only when `help_topic` is `Some`, positioned left of zoom;
   maximized glyph swap; all three glyphs drop together (not individually) on

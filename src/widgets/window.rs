@@ -59,6 +59,22 @@ pub struct Window {
     moveable: bool,
     closable: bool,
     zoomable: bool,
+    /// Whether `Desktop::cascade`/`Desktop::tile` (ADR 0033) may reposition
+    /// (and, if [`resizable`](Self::resizable), resize) this window at all —
+    /// independent of `moveable`/`resizable`, which gate interactive
+    /// drag/resize, not a bulk auto-arrange sweep. Default `true`; a docked,
+    /// fixed-position window (a toolbox) sets this `false` to sit out of
+    /// cascade/tile entirely.
+    arrangeable: bool,
+    /// Whether `Desktop` keeps this window above every non-topmost one
+    /// regardless of raise/click-to-front order (ADR 0034) — a pinned
+    /// utility panel (a toolbox) stays visually on top of ordinary document
+    /// windows without becoming, or displacing, the active one. Default
+    /// `false`. Independent of `active`: raising a topmost window (a direct
+    /// click on it, `open`/`show`/`focus`) still makes it active exactly
+    /// like any other window — only the *fallback* choice when the active
+    /// window closes/hides, and `cycle_focus`'s candidates, skip it.
+    topmost: bool,
     /// Whether to draw a hosted [`StatusPanel`] on the bottom border, left of
     /// any horizontal scroll bar (ADR 0032). Default `false`.
     status_panel: bool,
@@ -135,6 +151,8 @@ impl Window {
             moveable: true,
             closable: true,
             zoomable: true,
+            arrangeable: true,
+            topmost: false,
             status_panel: false,
             help_topic: None,
             placement: Placement::Positioned,
@@ -178,6 +196,21 @@ impl Window {
     pub fn zoomable(mut self, yes: bool) -> Self {
         self.zoomable = yes;
         self.frame.set_zoomable(yes);
+        self
+    }
+
+    /// Sets whether `Desktop::cascade`/`Desktop::tile` may reposition this
+    /// window at all (default `true`) — no `Frame` glyph to toggle, since
+    /// this has no interactive affordance of its own (ADR 0033).
+    pub fn arrangeable(mut self, yes: bool) -> Self {
+        self.arrangeable = yes;
+        self
+    }
+
+    /// Sets whether `Desktop` keeps this window pinned above every
+    /// non-topmost one (default `false`, ADR 0034).
+    pub fn topmost(mut self, yes: bool) -> Self {
+        self.topmost = yes;
         self
     }
 
@@ -272,6 +305,18 @@ impl Window {
     /// mirroring [`is_closable`](Self::is_closable).
     pub fn is_zoomable(&self) -> bool {
         self.zoomable
+    }
+
+    /// Whether `Desktop::cascade`/`Desktop::tile` may reposition this window
+    /// — checked by `Desktop` before including it in either sweep (ADR 0033).
+    pub fn is_arrangeable(&self) -> bool {
+        self.arrangeable
+    }
+
+    /// Whether `Desktop` keeps this window pinned above every non-topmost
+    /// one (ADR 0034).
+    pub fn is_topmost(&self) -> bool {
+        self.topmost
     }
 
     /// Whether the window is currently the active (focused) one.
@@ -871,6 +916,8 @@ mod tests {
         assert!(w.moveable);
         assert!(w.closable);
         assert!(w.zoomable);
+        assert!(w.arrangeable);
+        assert!(!w.topmost, "topmost is opt-in, not on by default");
         assert_eq!(w.placement(), Placement::Positioned);
         assert!(!w.ends_on(CM_OK), "no ending commands by default");
         assert!(!w.esc_cancels);
@@ -922,16 +969,22 @@ mod tests {
         assert!(w.is_resizable());
         assert!(w.is_closable());
         assert!(w.is_zoomable());
+        assert!(w.is_arrangeable());
+        assert!(!w.is_topmost());
 
         let locked = plain(rect(0, 0, 10, 4), blank())
             .moveable(false)
             .resizable(false)
             .closable(false)
-            .zoomable(false);
+            .zoomable(false)
+            .arrangeable(false)
+            .topmost(true);
         assert!(!locked.is_moveable());
         assert!(!locked.is_resizable());
         assert!(!locked.is_closable());
         assert!(!locked.is_zoomable());
+        assert!(!locked.is_arrangeable());
+        assert!(locked.is_topmost());
     }
 
     #[test]

@@ -168,15 +168,18 @@ impl Desktop {
         self.raise(id);
     }
 
-    /// Moves active to the next (or, if `!forward`, previous) *visible*
-    /// window in the current stack order, wrapping, and raises it to the top
-    /// — the keyboard equivalent of click-to-front (`CM_NEXT`/`CM_PREV`). A
-    /// safe no-op with fewer than two visible windows.
+    /// Moves active to the next (or, if `!forward`, previous) *visible,
+    /// ordinary* window in the current stack order, wrapping, and raises it
+    /// to the top — the keyboard equivalent of click-to-front (`CM_NEXT`/
+    /// `CM_PREV`). A `topmost`-flagged window (ADR 0034) is never a stop on
+    /// this cycle, the same way it's excluded from `cascade`/`tile`'s sweep
+    /// — a pinned utility panel isn't one of "the windows" this is meant to
+    /// step through. A safe no-op with fewer than two eligible windows.
     pub fn cycle_focus(&mut self, forward: bool) {
         let visible: Vec<WindowId> = self
             .windows
             .iter()
-            .filter(|(_, w)| w.is_visible())
+            .filter(|(_, w)| w.is_visible() && !w.is_topmost())
             .map(|(id, _)| *id)
             .collect();
         if visible.len() < 2 {
@@ -203,30 +206,49 @@ impl Desktop {
         let desktop = self.bounds.size();
         let mut index = 0;
         for (_, window) in self.windows.iter_mut() {
-            if !window.is_visible() || window.is_maximized() {
+            if !window.is_visible() || window.is_maximized() || !window.is_arrangeable() {
                 continue;
             }
-            window.set_bounds(arrange::cascade_slot(desktop, index, MIN_SIZE));
+            let slot = arrange::cascade_slot(desktop, index, MIN_SIZE);
+            window.set_bounds(Self::arranged_bounds(window, slot, desktop));
             index += 1;
         }
     }
 
-    /// Repositions every visible, non-maximized window into an even grid
-    /// filling the desktop ([`arrange::tile`], ADR 0033), in current stack
-    /// order. Same maximized/hidden exclusions as [`cascade`](Self::cascade).
+    /// Repositions every visible, non-maximized, arrangeable window into an
+    /// even grid filling the desktop ([`arrange::tile`], ADR 0033), in
+    /// current stack order. Same exclusions as [`cascade`](Self::cascade).
     pub fn tile(&mut self) {
         let desktop = self.bounds.size();
         let ids: Vec<WindowId> = self
             .windows
             .iter()
-            .filter(|(_, w)| w.is_visible() && !w.is_maximized())
+            .filter(|(_, w)| w.is_visible() && !w.is_maximized() && w.is_arrangeable())
             .map(|(id, _)| *id)
             .collect();
         let slot_count = ids.len();
         for (id, slot) in ids.into_iter().zip(arrange::tile(desktop, slot_count)) {
             if let Some(window) = self.window_mut(id) {
-                window.set_bounds(slot);
+                let bounds = Self::arranged_bounds(window, slot, desktop);
+                window.set_bounds(bounds);
             }
+        }
+    }
+
+    /// The bounds to actually apply for a cascade/tile `slot`: the slot
+    /// itself if `window` is resizable, or the slot's *origin* paired with
+    /// the window's own current size otherwise — cascade/tile reposition a
+    /// non-resizable window, never resize it (that flag means "nobody
+    /// changes my size," not just "no interactive corner-drag"). Clamped to
+    /// `desktop` so keeping the size can't push it off-screen.
+    fn arranged_bounds(window: &Window, slot: Rect, desktop: Size) -> Rect {
+        if window.is_resizable() {
+            slot
+        } else {
+            arrange::clamp_rect(
+                Rect::from_origin_size(slot.origin(), window.bounds().size()),
+                desktop,
+            )
         }
     }
 
@@ -265,7 +287,22 @@ impl Desktop {
         };
         let (_, mut window) = self.windows.remove(pos);
         window.set_active(true);
-        self.windows.push((id, window));
+        // A `topmost`-flagged (ADR 0034) window always goes to the true end
+        // of the stack; an ordinary one is inserted just below the first
+        // `topmost` entry (or the true end, if there are none) — so a
+        // pinned window can never be climbed above by raising something
+        // else, while `self.windows`' order still doubles as the complete,
+        // literal z-order everywhere (draw, click hit-testing) with no
+        // separate bookkeeping.
+        let insert_at = if window.is_topmost() {
+            self.windows.len()
+        } else {
+            self.windows
+                .iter()
+                .position(|(_, w)| w.is_topmost())
+                .unwrap_or(self.windows.len())
+        };
+        self.windows.insert(insert_at, (id, window));
         if let Some(previous) = self.active {
             if previous != id {
                 if let Some((_, w)) = self.windows.iter_mut().find(|(wid, _)| *wid == previous) {
@@ -276,18 +313,31 @@ impl Desktop {
         self.active = Some(id);
     }
 
-    /// Reassigns `active` to the topmost visible window in stack order (or
-    /// `None`) without moving anything — the next-topmost-visible window is
-    /// already correctly positioned. Used by [`close`](Self::close)/
-    /// [`hide`](Self::hide), which have already cleared or removed the
-    /// previous active window's own flag.
+    /// Reassigns `active` to the topmost visible *ordinary* (non-`topmost`-
+    /// flagged) window in stack order if there is one, falling back to a
+    /// `topmost` one only if nothing else is visible (or `None`), without
+    /// moving anything — the next window is already correctly positioned.
+    /// Used by [`close`](Self::close)/[`hide`](Self::hide), which have
+    /// already cleared or removed the previous active window's own flag.
+    /// This is *not* the same "topmost" as [`Window::is_topmost`] used to
+    /// pick the candidate — a `topmost`-pinned window (a toolbox) shouldn't
+    /// silently steal focus just because something else closed (ADR 0034);
+    /// it's still eligible, last resort, so there's always an active window
+    /// whenever anything at all is visible.
     fn activate_topmost_visible(&mut self) {
-        let next = self
+        let ordinary = self
             .windows
             .iter()
             .rev()
-            .find(|(_, w)| w.is_visible())
+            .find(|(_, w)| w.is_visible() && !w.is_topmost())
             .map(|(id, _)| *id);
+        let next = ordinary.or_else(|| {
+            self.windows
+                .iter()
+                .rev()
+                .find(|(_, w)| w.is_visible())
+                .map(|(id, _)| *id)
+        });
         if let Some(id) = next {
             if let Some((_, w)) = self.windows.iter_mut().find(|(wid, _)| *wid == id) {
                 w.set_active(true);
@@ -968,6 +1018,71 @@ mod tests {
     }
 
     #[test]
+    fn cascade_skips_non_arrangeable_windows() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let docked = desk.open(blank_window_at(rect(5, 0, 10, 12)).arrangeable(false));
+        let a = desk.open(blank_window_at(rect(20, 8, 10, 4)));
+
+        desk.cascade();
+
+        // The docked window is left exactly where it was...
+        assert_eq!(desk.window(docked).unwrap().bounds(), rect(5, 0, 10, 12));
+        // ...and doesn't consume a cascade slot: `a` still lands at index 0,
+        // not 1, even though it opened second.
+        assert_eq!(
+            desk.window(a).unwrap().bounds(),
+            crate::arrange::cascade_slot(Size::new(40, 12), 0, Size::new(10, 3))
+        );
+    }
+
+    #[test]
+    fn tile_skips_non_arrangeable_windows() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let docked = desk.open(blank_window_at(rect(5, 0, 10, 12)).arrangeable(false));
+        let a = desk.open(blank_window_at(rect(20, 8, 10, 4)));
+
+        desk.tile();
+
+        assert_eq!(desk.window(docked).unwrap().bounds(), rect(5, 0, 10, 12));
+        // The sole remaining arrangeable window fills the whole desktop,
+        // same as tiling a single window alone would.
+        assert_eq!(desk.window(a).unwrap().bounds(), rect(0, 0, 40, 12));
+    }
+
+    #[test]
+    fn cascade_repositions_but_does_not_resize_a_non_resizable_window() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let id = desk.open(blank_window_at(rect(5, 5, 12, 4)).resizable(false));
+
+        desk.cascade();
+
+        let slot = crate::arrange::cascade_slot(Size::new(40, 12), 0, Size::new(10, 3));
+        assert_eq!(
+            desk.window(id).unwrap().bounds(),
+            rect(slot.origin().x, slot.origin().y, 12, 4),
+            "moved to the cascade slot's origin, but kept its own 12x4 size"
+        );
+    }
+
+    #[test]
+    fn tile_repositions_but_does_not_resize_a_non_resizable_window() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let fixed = desk.open(blank_window_at(rect(0, 0, 12, 4)).resizable(false));
+        let flexible = desk.open(blank_window_at(rect(20, 8, 10, 4)));
+
+        desk.tile();
+
+        let slots = crate::arrange::tile(Size::new(40, 12), 2);
+        assert_eq!(
+            desk.window(fixed).unwrap().bounds(),
+            rect(slots[0].origin().x, slots[0].origin().y, 12, 4),
+            "moved to its tile slot's origin, but kept its own 12x4 size"
+        );
+        // The resizable sibling still gets the slot's full computed size.
+        assert_eq!(desk.window(flexible).unwrap().bounds(), slots[1]);
+    }
+
+    #[test]
     fn focus_changes_which_overlapping_window_is_on_top() {
         let log = Rc::new(RefCell::new(Vec::new()));
         let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
@@ -991,6 +1106,117 @@ mod tests {
             1,
             "focusing a brings it to the top"
         );
+    }
+
+    // --- `topmost` (ADR 0034) ---
+
+    #[test]
+    fn a_topmost_window_stays_above_even_after_an_ordinary_window_is_raised() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let a = desk.open(recorder_window(1, rect(0, 0, 12, 6), &log));
+        desk.open(recorder_window(2, rect(3, 2, 12, 6), &log).topmost(true));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let overlap_click = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(5, 4),
+            modifiers: Modifiers::NONE,
+        });
+
+        desk.handle_event(&overlap_click, &mut ctx);
+        assert_eq!(log.borrow().last().unwrap().0, 2, "b (topmost) is on top");
+
+        // Focusing (raising) the ordinary window must not let it climb
+        // above the topmost one.
+        desk.focus(a);
+        desk.handle_event(&overlap_click, &mut ctx);
+        assert_eq!(
+            log.borrow().last().unwrap().0,
+            2,
+            "b stays on top even after a is raised"
+        );
+    }
+
+    #[test]
+    fn raising_a_topmost_window_can_still_move_it_above_another_topmost_window() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let x = desk.open(recorder_window(1, rect(0, 0, 10, 4), &log).topmost(true));
+        desk.open(recorder_window(2, rect(2, 1, 10, 4), &log).topmost(true));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let overlap_click = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: Point::new(4, 2),
+            modifiers: Modifiers::NONE,
+        });
+
+        desk.handle_event(&overlap_click, &mut ctx);
+        assert_eq!(log.borrow().last().unwrap().0, 2, "y opened last, on top");
+
+        desk.focus(x);
+        desk.handle_event(&overlap_click, &mut ctx);
+        assert_eq!(
+            log.borrow().last().unwrap().0,
+            1,
+            "raising x brought it above y, even though both are topmost"
+        );
+    }
+
+    #[test]
+    fn activate_topmost_visible_prefers_an_ordinary_window_over_a_topmost_one() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let a = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        desk.open(blank_window_at(rect(0, 0, 10, 4)).topmost(true));
+        let c = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        assert_eq!(desk.active_id(), Some(c));
+
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        desk.close(c, &mut ctx);
+
+        assert_eq!(
+            desk.active_id(),
+            Some(a),
+            "falls back to the ordinary window, not the topmost one"
+        );
+    }
+
+    #[test]
+    fn activate_topmost_visible_falls_back_to_a_topmost_window_if_nothing_else_is_visible() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let b = desk.open(blank_window_at(rect(0, 0, 10, 4)).topmost(true));
+        let a = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        assert_eq!(desk.active_id(), Some(a));
+
+        desk.hide(a);
+
+        assert_eq!(
+            desk.active_id(),
+            Some(b),
+            "falls back to the topmost window when it's the only one left visible"
+        );
+    }
+
+    #[test]
+    fn cm_next_and_cm_prev_skip_topmost_windows() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let a = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        desk.open(blank_window_at(rect(0, 0, 10, 4)).topmost(true));
+        let c = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        assert_eq!(desk.active_id(), Some(c));
+
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        desk.handle_event(&Event::Command(CM_NEXT), &mut ctx);
+        assert_eq!(
+            desk.active_id(),
+            Some(a),
+            "cycles straight from c to a, skipping the topmost b"
+        );
+        desk.handle_event(&Event::Command(CM_NEXT), &mut ctx);
+        assert_eq!(desk.active_id(), Some(c));
     }
 
     // --- Command interception (ADR 0016) ---

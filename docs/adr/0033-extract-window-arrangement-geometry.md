@@ -91,6 +91,32 @@ rest via `arrange::cascade_slot`/`tile`, backed by their own tests plus a
 manual run-through added to `examples/mdi.rs`'s existing desktop demo. `edit`
 adopting these stays separate, later, `edit`-side work — not part of this.
 
+**`Window` gains an `arrangeable` flag** (default `true`), independent of
+`moveable`/`resizable`/`closable`/`zoomable`: those gate *interactive*
+affordances (a drag, a glyph click), while `arrangeable` gates whether
+`cascade`/`tile`'s bulk sweep may touch this window at all. A docked,
+fixed-position window (`examples/mdi.rs`'s toolbox) sets it `false` to sit
+out of both operations entirely, regardless of visibility — and without
+reserving it a slot, so the windows that *do* participate lay out as if it
+were never open. Discovered from actually using the `mdi` demo's new
+Cascade/Tile commands: the toolbox — already `resizable(false)`/
+`zoomable(false)`/`closable(false)` precisely because it's meant to stay put
+— still got swept into both, since neither flag was ever about *this* kind
+of repositioning. A single flag rather than separate `cascadable`/`tileable`
+ones: cascade and tile are both "bulk auto-layout," the same category the
+`arrange` module's own name already groups them under, and no concrete
+caller wants to opt out of one but not the other yet (CLAUDE.md: don't split
+until a real need shows up).
+
+**A non-`resizable` window participating in cascade/tile is moved, never
+resized.** The same demo surfaced this too: `resizable(false)` reads as "my
+size never changes," but cascade/tile resized every participating window
+regardless, since the flag had only ever gated interactive corner-drag
+before. Both now move such a window to its computed slot's *origin* while
+keeping its own current size (clamped to the desktop so the kept size can't
+push it off-screen) — `arranged_bounds` in `desktop.rs` is the one place
+this distinction is made, shared by both methods.
+
 **`Desktop`'s current no-bounds-clamping drag/resize behaviour is kept
 as-is** (resolves point 3) rather than folded in as a side effect of this
 refactor — `continue_session` deliberately has no ceiling, matching what

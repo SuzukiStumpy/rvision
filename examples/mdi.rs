@@ -7,16 +7,21 @@
 //! - **Window ▸ New Window** opens another window, cascaded from the last.
 //! - Drag a window's title bar to move it; drag its bottom-right corner to
 //!   resize it. Clicking anywhere on a window raises it to the top.
-//! - **Window ▸ Cascade**/**Tile** (`F7`/`F8`) re-lay every open, non-zoomed
-//!   window out via `Desktop::cascade`/`Desktop::tile` (ADR 0033) — try both
-//!   with a handful of windows open, some hidden, and one zoomed (the zoomed
-//!   one is left alone; the toolbox, if hidden, isn't touched either).
+//! - **Window ▸ Cascade**/**Tile** (`F7`/`F8`) re-lay every open, non-zoomed,
+//!   arrangeable window out via `Desktop::cascade`/`Desktop::tile` (ADR
+//!   0033) — try both with a handful of windows open, some hidden, and one
+//!   zoomed (the zoomed one is left alone). The toolbox is untouched by
+//!   either regardless of visibility: it's `arrangeable(false)`, docked at a
+//!   fixed spot rather than swept into the layout.
 //! - `Ctrl-N` opens a window, `Ctrl-W` closes the active one, `F5` zooms/
 //!   restores it, `F6` cycles focus forward (Window ▸ Next/Previous covers
 //!   both directions).
 //! - Window ▸ Toggle Toolbox hides/shows a fixed, non-closable toolbox
 //!   window docked to the right — `Desktop::hide`/`show`, not `open`/`close`,
-//!   since it stays resident either way.
+//!   since it stays resident either way. It's `topmost` (ADR 0034): once
+//!   shown, click a document window (or raise one with `F6`) and confirm
+//!   the toolbox stays visually on top rather than being covered — and that
+//!   the document, not the toolbox, is what actually became active/focused.
 //! - `F1` (or Help ▸ Contents, or a window's own help glyph — the one just
 //!   left of its zoom glyph) opens a resizable two-pane `HelpWindow` (ADR
 //!   0013/0017), targeted at whatever the *active* window is about (ADR
@@ -280,7 +285,11 @@ fn main() -> io::Result<()> {
 
     // A fixed, non-closable toolbox docked to the right edge, hidden until
     // toggled on — Desktop::hide/show, not open/close, since it stays
-    // resident either way (ADR 0016).
+    // resident either way (ADR 0016). Not arrangeable (ADR 0033): it's
+    // docked at a fixed spot, so Window ▸ Cascade/Tile leave it alone
+    // entirely rather than sweeping it into the layout with everything else.
+    // Topmost (ADR 0034): once shown, a document window raised above it
+    // (a click, Next/Previous) never climbs above it visually.
     let toolbox_w = 18.min(desk_w).max(0);
     let toolbox = Window::new(
         rect((desk_w - toolbox_w).max(0), 0, toolbox_w, desk_h.min(10)),
@@ -294,6 +303,8 @@ fn main() -> io::Result<()> {
     .resizable(false)
     .zoomable(false)
     .closable(false)
+    .arrangeable(false)
+    .topmost(true)
     .with_help_topic("toolbox");
     let toolbox_id = desktop.open(toolbox);
     desktop.hide(toolbox_id);
