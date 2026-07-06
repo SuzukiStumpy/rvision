@@ -459,9 +459,15 @@ impl Desktop {
             if !self.window(active).is_some_and(Window::is_zoomable) {
                 return EventResult::Ignored;
             }
-            let bounds = self.bounds;
+            // `self.bounds` is parent-relative (ADR 0008) — a zoomed window
+            // must fill the desktop's own *local* frame instead, since that's
+            // the space window bounds are drawn/hit-tested in (`Shell`
+            // already translates by `self.bounds`'s own origin before
+            // handing events to `Desktop`). Reusing `self.bounds` directly
+            // here would double-apply that offset.
+            let local_bounds = Rect::from_origin_size(Point::new(0, 0), self.bounds.size());
             if let Some(window) = self.window_mut(active) {
-                window.toggle_zoom(bounds);
+                window.toggle_zoom(local_bounds);
             }
             return EventResult::Consumed;
         }
@@ -946,6 +952,27 @@ mod tests {
         desk.handle_event(&Event::Command(CM_ZOOM), &mut ctx);
         assert!(!desk.window(id).unwrap().is_maximized());
         assert_eq!(desk.window(id).unwrap().bounds(), rect(2, 1, 10, 5));
+    }
+
+    #[test]
+    fn cm_zoom_fills_the_desktops_own_local_frame_even_when_the_desktop_itself_is_offset() {
+        // A `Desktop` hosted in a real `Shell` always sits at a non-zero
+        // origin (below the menu bar) — `Desktop::bounds()` is parent-relative
+        // (ADR 0008), but window bounds are desktop-*local*: `Shell` already
+        // translates the canvas/mouse position by that offset before handing
+        // events to `Desktop`. `CM_ZOOM` must fill the desktop's own local
+        // frame (origin (0, 0), matching its own size) rather than carrying
+        // its parent-relative origin over onto the window — otherwise the
+        // zoomed window ends up shifted by that same offset a second time,
+        // uncovering rows at the top and overflowing past the bottom.
+        let mut desk = Desktop::new(rect(0, 1, 40, 20), Cell::default());
+        let id = desk.open(blank_window_at(rect(2, 1, 10, 5)));
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+
+        desk.handle_event(&Event::Command(CM_ZOOM), &mut ctx);
+
+        assert_eq!(desk.window(id).unwrap().bounds(), rect(0, 0, 40, 20));
     }
 
     #[test]
