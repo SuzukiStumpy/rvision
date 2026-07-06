@@ -45,5 +45,6 @@ workspace from the start, so it kept its original number unchanged.
 | [0030](0030-per-view-topmost-priority.md) | Per-view topmost priority for transient popups (`View::wants_topmost`), `Group`-scoped |
 | [0031](0031-non-wrapping-nested-focus-groups.md) | Non-wrapping nested focus groups (`Group::non_wrapping`): a boundary Tab escapes to the owning group instead of wrapping locally |
 | [0032](0032-status-content-per-view-protocol.md) | Status content is a per-view protocol (`View::status_text`), hosted by `Window`'s frame or `Shell`'s desktop status row |
+| [0033](0033-extract-window-arrangement-geometry.md) | Extract shared window-arrangement geometry (chrome hit-testing, drag sessions, cascade/tile) into `rvision::arrange` |
 
 New decision? Copy [`0000-template.md`](0000-template.md).

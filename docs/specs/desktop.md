@@ -5,7 +5,8 @@
 - **Related ADRs:** 0016 (unify `Window`/`Dialog`, dynamic desktop), 0007
   (mouse), 0009 (`Shell`), 0003/0004 (tree + dispatch), 0027 (generic mouse
   capture for continuous drag interactions), 0028 (global keyboard
-  accelerator table)
+  accelerator table), 0033 (shared `arrange` geometry: chrome hit-testing,
+  drag sessions, cascade/tile)
 
 ## Purpose
 
@@ -65,6 +66,16 @@ impl Desktop {
     /// keyboard equivalent of click-to-front (`CM_NEXT`/`CM_PREV`, below).
     pub fn cycle_focus(&mut self, forward: bool);
 
+    /// Repositions every visible, non-maximized window into a cascade
+    /// (`arrange::cascade_slot`, ADR 0033), in current stack order. Z-order
+    /// and the active window are unchanged — only bounds move.
+    pub fn cascade(&mut self);
+
+    /// Repositions every visible, non-maximized window into an even grid
+    /// filling the desktop (`arrange::tile`, ADR 0033). Same exclusions as
+    /// `cascade`.
+    pub fn tile(&mut self);
+
     pub fn active_id(&self) -> Option<WindowId>;
     pub fn window(&self, id: WindowId) -> Option<&Window>;
     pub fn window_mut(&mut self, id: WindowId) -> Option<&mut Window>;
@@ -111,26 +122,40 @@ post any of the four directly — `Desktop` is what gives them effect.
   mechanism needed).
 - **Drag/resize sessions**, owned by `Desktop` directly — mirroring how
   `MenuBar` owns its own open/closed state machine across a sequence of
-  events, rather than each event being handled statelessly:
-  - A `Down(Left)` translated into a window's local coordinates that lands on
-    its **title bar** (row 0, outside the close/zoom glyph spans) starts a
-    *move* session if the window is `moveable`; one that lands on the
-    **bottom-right corner** starts a *resize* session if `resizable`. Either
-    way the down-click itself is consumed by `Desktop` (never forwarded into
-    the window) once a session starts.
-  - A down-click that lands on a close/zoom glyph, or inside the interior, is
-    *not* a session start — after the click-to-front raise, it is forwarded
-    into the window exactly as positional dispatch does today, letting
-    `Window` itself handle the glyphs (see [`window.md`](window.md)) or route
-    on into the interior.
+  events, rather than each event being handled statelessly. The
+  classification and session math are `arrange::chrome_hit`/`start_session`/
+  `continue_session` (ADR 0033), shared with `Window`'s own close/zoom/help
+  glyph hit-testing:
+  - A `Down(Left)` at a screen-absolute position that `arrange::chrome_hit`
+    classifies as the **title bar** (row 0, outside the close/zoom/help
+    glyph spans) starts a *move* session if the window is `moveable`; one
+    classified as the **bottom-right corner** starts a *resize* session if
+    `resizable`. Either way the down-click itself is consumed by `Desktop`
+    (never forwarded into the window) once a session starts.
+  - A down-click classified as a close/zoom/help glyph, or landing inside the
+    interior, is *not* a session start — after the click-to-front raise, it
+    is forwarded into the window exactly as positional dispatch does today,
+    letting `Window` itself handle the glyphs (see [`window.md`](window.md),
+    also `arrange::chrome_hit`-backed) or route on into the interior.
   - While a session is active, `Desktop` consumes every `Drag(Left)` itself
-    (translating pointer movement since the anchor into a new `bounds` via
-    `Window::set_bounds` — moved for a move session, resized for a resize
-    one) and never forwards to any window; `Up(Left)` ends the session
-    (consumed) and dispatch returns to normal.
+    (`arrange::continue_session` maps pointer movement since the anchor to a
+    new `bounds`, applied via `Window::set_bounds` — moved for a move
+    session, resized and floored at `MIN_SIZE` for a resize one — with no
+    ceiling: `Desktop` still never clamps a dragged/resized window to its
+    own bounds, deliberately kept as-is by ADR 0033) and never forwards to
+    any window; `Up(Left)` ends the session (consumed) and dispatch returns
+    to normal.
   - No session is active for more than one window at a time; a session in
     progress makes `Desktop` ignore new `Down` events until it ends (matches
     single-pointer terminal input; no multi-touch to arbitrate).
+- **Cascade/tile** (ADR 0033): `cascade`/`tile` reposition every currently
+  visible, non-maximized window (`arrange::cascade_slot`/`arrange::tile`) in
+  current stack order; a maximized window already fills the desktop and is
+  left untouched rather than force-restored, and a hidden window is skipped.
+  Neither touches z-order or the active window — only bounds move. Plain
+  methods, not framework `Command`s — matching `open`/`hide`/`show`/`focus`'s
+  existing precedent that an operation needing no target-window data beyond
+  what's already on `self` doesn't need to travel as a bubbled `Command`.
 - **Mouse capture (ADR 0027).** A view anywhere in a window's tree can ask
   (via `Context::request_mouse_capture`) to keep receiving every subsequent
   mouse event straight through to its own window — regardless of where the
@@ -173,6 +198,10 @@ post any of the four directly — `Desktop` is what gives them effect.
 
 - [`Window`](window.md) (owned by value; `set_bounds`/`hide`/`show`/`toggle_zoom`/
   `valid` are what `Desktop` drives).
+- `arrange` (ADR 0033): `chrome_hit`/`ChromeFlags`/`ChromeHit` classify a
+  press; `start_session`/`continue_session`/`ArrangeSession`/`ArrangeKind`
+  drive the drag/resize session; `cascade_slot`/`tile` back `cascade`/`tile`.
+  `Desktop` supplies its own `MIN_SIZE` at the call sites that need a floor.
 - `view::{View, Context}`, `command::{Command, CM_CLOSE, CM_ZOOM, CM_NEXT, CM_PREV,
   Accelerator, Accelerators}`, `event::{Event, MouseEvent, MouseKind}`.
 - `app::Root` (asks `valid(CM_QUIT, ctx)` before honouring a posted quit —
@@ -186,7 +215,9 @@ post any of the four directly — `Desktop` is what gives them effect.
   `close` on a `valid`-refusing window is a no-op and returns `None`; `close`
   on the active window transfers active to the next visible window in stack
   order; `hide`/`show` toggle visibility and reassign active correctly; an
-  unknown `WindowId` is a safe no-op everywhere.
+  unknown `WindowId` is a safe no-op everywhere; `cascade`/`tile` position
+  visible windows per `arrange::cascade_slot`/`arrange::tile`, skip hidden
+  and maximized windows, and leave z-order/the active window untouched.
 - **Render (snapshot):** a hidden window is not drawn (no shadow, no chrome)
   even though it is still resident; z-order after a `focus`/`cycle_focus`
   raise matches the new stack order.
@@ -211,13 +242,13 @@ post any of the four directly — `Desktop` is what gives them effect.
   events reach them).
 - **Manual:** a `desktop`/`mdi` example — open several windows, drag, resize,
   close, cycle with `CM_NEXT`, hide/show a toolbox-style window from a menu
-  command.
+  command, cascade and tile from a menu command.
 
 ## Open questions
 
-- **Tiling/cascade layout commands.** Out of scope here — `roadmap.md`'s
-  cascading-menus/context-menu items are the nearer-term backlog; an
-  auto-arrange command for windows is a plausible future one, not this pass.
+- **Tiling/cascade layout commands.** Landed (ADR 0033): `cascade`/`tile`,
+  backed by `arrange::cascade_slot`/`arrange::tile`, exercised manually via
+  `examples/mdi.rs`'s Window ▸ Cascade/Tile commands.
 - **Resize granularity** (corner-only vs. full-edge) — see
   [`window.md`](window.md)'s matching open question; both are decided
   together since `Desktop` is what detects the grab point.

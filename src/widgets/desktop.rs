@@ -15,6 +15,7 @@
 //! intercepts `CM_CLOSE`/`CM_ZOOM`/`CM_NEXT`/`CM_PREV` before they would
 //! otherwise just fall through to the active window.
 
+use crate::arrange::{self, ChromeFlags, ChromeHit};
 use crate::canvas::Canvas;
 use crate::cell::Cell;
 use crate::command::{Accelerator, Accelerators, CM_CLOSE, CM_NEXT, CM_PREV, CM_ZOOM, Command};
@@ -22,7 +23,11 @@ use crate::event::{Event, EventResult, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect, Size};
 use crate::view::{Context, View};
 
-use super::{Frame, Window};
+use super::Window;
+// Only the test module below still derives glyph spans directly (to compute
+// expected click positions); production code now goes through `arrange`.
+#[cfg(test)]
+use super::Frame;
 
 /// An opaque handle to a window `Desktop` owns, from a monotonic counter kept
 /// internally. No locking: the event loop is single-threaded by design
@@ -41,24 +46,13 @@ pub struct WindowId(u64);
 /// questions).
 const MIN_SIZE: Size = Size::new(10, 3);
 
-/// What a drag session is doing to the window it grabbed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DragKind {
-    /// A title-bar drag: translates the window's origin.
-    Move,
-    /// A bottom-right-corner drag: resizes the window in place.
-    Resize,
-}
-
 /// An in-progress title-bar move or corner resize, owned by `Desktop` for as
-/// long as the mouse button stays down.
+/// long as the mouse button stays down — the geometry itself lives in
+/// [`arrange::ArrangeSession`] (ADR 0033), shared with `Window`'s own
+/// chrome hit-testing and (prospectively) `edit`'s bespoke MDI.
 struct DragSession {
     window: WindowId,
-    kind: DragKind,
-    /// The desktop-local position the session started at.
-    anchor: Point,
-    /// The window's bounds at the moment the session started.
-    start_bounds: Rect,
+    session: arrange::ArrangeSession,
 }
 
 /// A backdrop plus a dynamic stack of windows.
@@ -199,6 +193,43 @@ impl Desktop {
         self.raise(visible[next]);
     }
 
+    /// Repositions every visible, non-maximized window into a cascade —
+    /// stepped down-right from the top-left, wrapping every 8
+    /// ([`arrange::cascade_slot`], ADR 0033) — in current stack order. A
+    /// maximized window already fills the desktop and is left untouched
+    /// rather than force-restored; a hidden window is skipped too. Z-order
+    /// and the active window are unchanged — only bounds move.
+    pub fn cascade(&mut self) {
+        let desktop = self.bounds.size();
+        let mut index = 0;
+        for (_, window) in self.windows.iter_mut() {
+            if !window.is_visible() || window.is_maximized() {
+                continue;
+            }
+            window.set_bounds(arrange::cascade_slot(desktop, index, MIN_SIZE));
+            index += 1;
+        }
+    }
+
+    /// Repositions every visible, non-maximized window into an even grid
+    /// filling the desktop ([`arrange::tile`], ADR 0033), in current stack
+    /// order. Same maximized/hidden exclusions as [`cascade`](Self::cascade).
+    pub fn tile(&mut self) {
+        let desktop = self.bounds.size();
+        let ids: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| w.is_visible() && !w.is_maximized())
+            .map(|(id, _)| *id)
+            .collect();
+        let slot_count = ids.len();
+        for (id, slot) in ids.into_iter().zip(arrange::tile(desktop, slot_count)) {
+            if let Some(window) = self.window_mut(id) {
+                window.set_bounds(slot);
+            }
+        }
+    }
+
     /// The id of the active (topmost visible) window, or `None` if the
     /// desktop has no visible windows.
     pub fn active_id(&self) -> Option<WindowId> {
@@ -274,41 +305,35 @@ impl Desktop {
             .map(|(id, _)| *id)
     }
 
-    /// Starts a move or resize session if `local` (already translated into
-    /// `id`'s coordinates) is a valid grab point: the title bar (row 0),
+    /// Starts a move or resize session if `pos` (screen-absolute, same space
+    /// as `id`'s own bounds) is a valid grab point: the title bar (row 0),
     /// clear of any drawn close/zoom/help glyph (ADR 0021), for a move; the
-    /// bottom-right corner for a resize. Returns whether a session was
-    /// started — a `false` return leaves the click to be forwarded into the
-    /// window as usual.
-    fn start_session_if_applicable(&mut self, id: WindowId, local: Point, anchor: Point) -> bool {
+    /// bottom-right corner for a resize — [`arrange::chrome_hit`]'s
+    /// classification (ADR 0033). Returns whether a session was started — a
+    /// `false` return leaves the click to be forwarded into the window as
+    /// usual.
+    fn start_session_if_applicable(&mut self, id: WindowId, pos: Point) -> bool {
         let Some(window) = self.window(id) else {
             return false;
         };
         let bounds = window.bounds();
-        let width = bounds.width();
-        let height = bounds.height();
-        let has_help = window.help_topic().is_some();
-        let on_close = window.is_closable()
-            && Frame::close_span(width, has_help).is_some_and(|span| span.contains(&local.x));
-        let on_zoom = window.is_zoomable()
-            && Frame::zoom_span(width, has_help).is_some_and(|span| span.contains(&local.x));
-        let on_help =
-            has_help && Frame::help_span(width).is_some_and(|span| span.contains(&local.x));
-        let kind = if local.y == 0 && !on_close && !on_zoom && !on_help {
-            window.is_moveable().then_some(DragKind::Move)
-        } else if local.x == width - 1 && local.y == height - 1 {
-            window.is_resizable().then_some(DragKind::Resize)
-        } else {
-            None
+        let flags = ChromeFlags {
+            moveable: window.is_moveable(),
+            resizable: window.is_resizable(),
+            closable: window.is_closable(),
+            zoomable: window.is_zoomable(),
+            has_help: window.help_topic().is_some(),
         };
-        let Some(kind) = kind else {
-            return false;
+        let kind = match arrange::chrome_hit(bounds, pos, flags) {
+            ChromeHit::Move => arrange::ArrangeKind::Move,
+            ChromeHit::Resize => arrange::ArrangeKind::Resize,
+            ChromeHit::Close | ChromeHit::Zoom | ChromeHit::Help | ChromeHit::None => {
+                return false;
+            }
         };
         self.drag = Some(DragSession {
             window: id,
-            kind,
-            anchor,
-            start_bounds: bounds,
+            session: arrange::start_session(kind, bounds, pos),
         });
         true
     }
@@ -319,16 +344,7 @@ impl Desktop {
         let Some(session) = self.drag.take() else {
             return;
         };
-        let dx = pos.x - session.anchor.x;
-        let dy = pos.y - session.anchor.y;
-        let new_bounds = match session.kind {
-            DragKind::Move => session.start_bounds.offset(dx, dy),
-            DragKind::Resize => {
-                let width = (session.start_bounds.width() + dx).max(MIN_SIZE.width);
-                let height = (session.start_bounds.height() + dy).max(MIN_SIZE.height);
-                Rect::from_origin_size(session.start_bounds.origin(), Size::new(width, height))
-            }
-        };
+        let new_bounds = arrange::continue_session(&session.session, pos, MIN_SIZE);
         if let Some(window) = self.window_mut(session.window) {
             window.set_bounds(new_bounds);
         }
@@ -413,15 +429,12 @@ impl Desktop {
             self.raise(id);
         }
 
-        let bounds = match self.window(id) {
-            Some(window) => window.bounds(),
-            None => return EventResult::Ignored,
-        };
-        let origin = bounds.origin();
-        let local = mouse.pos.offset(-origin.x, -origin.y);
+        if self.window(id).is_none() {
+            return EventResult::Ignored;
+        }
 
         if matches!(mouse.kind, MouseKind::Down(MouseButton::Left))
-            && self.start_session_if_applicable(id, local, mouse.pos)
+            && self.start_session_if_applicable(id, mouse.pos)
         {
             return EventResult::Consumed;
         }
@@ -876,6 +889,82 @@ mod tests {
         let mut ctx = Context::new(&cs);
         assert!(desk.close(fake, &mut ctx).is_none());
         assert_eq!(desk.active_id(), Some(real));
+    }
+
+    #[test]
+    fn cascade_positions_visible_windows_per_arrange_cascade_slot() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let a = desk.open(blank_window_at(rect(20, 8, 10, 4)));
+        let b = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+
+        desk.cascade();
+
+        assert_eq!(
+            desk.window(a).unwrap().bounds(),
+            crate::arrange::cascade_slot(Size::new(40, 12), 0, Size::new(10, 3))
+        );
+        assert_eq!(
+            desk.window(b).unwrap().bounds(),
+            crate::arrange::cascade_slot(Size::new(40, 12), 1, Size::new(10, 3))
+        );
+        // Z-order/active are untouched by a pure re-layout.
+        assert_eq!(desk.active_id(), Some(b));
+    }
+
+    #[test]
+    fn cascade_skips_hidden_and_maximized_windows() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let visible = desk.open(blank_window_at(rect(5, 5, 10, 4)));
+        let hidden = desk.open(blank_window_at(rect(1, 1, 10, 4)));
+        desk.hide(hidden);
+        let maximized = desk.open(blank_window_at(rect(2, 2, 10, 4)));
+        desk.window_mut(maximized)
+            .unwrap()
+            .toggle_zoom(rect(0, 0, 40, 12));
+
+        desk.cascade();
+
+        // The only eligible window lands at cascade slot 0 (the desktop
+        // itself), not shifted by the hidden/maximized ones it skipped.
+        assert_eq!(
+            desk.window(visible).unwrap().bounds(),
+            crate::arrange::cascade_slot(Size::new(40, 12), 0, Size::new(10, 3))
+        );
+        assert_eq!(desk.window(hidden).unwrap().bounds(), rect(1, 1, 10, 4));
+        assert!(desk.window(maximized).unwrap().is_maximized());
+        assert_eq!(desk.window(maximized).unwrap().bounds(), rect(0, 0, 40, 12));
+    }
+
+    #[test]
+    fn tile_lays_out_visible_windows_per_arrange_tile() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let a = desk.open(blank_window_at(rect(20, 8, 10, 4)));
+        let b = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+
+        desk.tile();
+
+        let slots = crate::arrange::tile(Size::new(40, 12), 2);
+        assert_eq!(desk.window(a).unwrap().bounds(), slots[0]);
+        assert_eq!(desk.window(b).unwrap().bounds(), slots[1]);
+        assert_eq!(desk.active_id(), Some(b));
+    }
+
+    #[test]
+    fn tile_skips_hidden_and_maximized_windows() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let visible = desk.open(blank_window_at(rect(5, 5, 10, 4)));
+        let hidden = desk.open(blank_window_at(rect(1, 1, 10, 4)));
+        desk.hide(hidden);
+        let maximized = desk.open(blank_window_at(rect(2, 2, 10, 4)));
+        desk.window_mut(maximized)
+            .unwrap()
+            .toggle_zoom(rect(0, 0, 40, 12));
+
+        desk.tile();
+
+        assert_eq!(desk.window(visible).unwrap().bounds(), rect(0, 0, 40, 12));
+        assert_eq!(desk.window(hidden).unwrap().bounds(), rect(1, 1, 10, 4));
+        assert!(desk.window(maximized).unwrap().is_maximized());
     }
 
     #[test]

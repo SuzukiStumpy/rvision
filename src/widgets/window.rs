@@ -22,6 +22,7 @@
 //! start for it. An application that wants no chrome at all can skip `Window`/
 //! `Desktop` entirely and hand `Root::new` a full-screen `View` directly.
 
+use crate::arrange;
 use crate::canvas::Canvas;
 use crate::cell::Cell;
 use crate::color::Style;
@@ -626,34 +627,38 @@ impl View for Window {
                         return EventResult::Consumed;
                     }
                 }
-                // The close/zoom glyphs sit on the top border row (ADR 0016);
-                // neither is interactive when its flag is off (nor drawn there —
-                // see Frame), so there is nothing to hit.
+                // The close/zoom/help glyphs sit on the top border row (ADR
+                // 0016/0021); [`arrange::chrome_hit`] (ADR 0033) is what
+                // decides whether `mouse.pos` (already window-local) landed
+                // on one, gated on this window's own flags — a disabled or
+                // undrawn glyph's column just isn't a hit. `Move`/`Resize`/
+                // `None` fall through unchanged: `Window` never acted on
+                // those itself, `Desktop` already claims them upstream.
                 if mouse.pos.y == 0 && matches!(mouse.kind, MouseKind::Down(MouseButton::Left)) {
-                    let has_help = self.help_topic.is_some();
-                    if self.closable {
-                        if let Some(span) = Frame::close_span(self.bounds.width(), has_help) {
-                            if span.contains(&mouse.pos.x) {
-                                ctx.post(CM_CLOSE);
-                                return EventResult::Consumed;
-                            }
+                    let flags = arrange::ChromeFlags {
+                        moveable: self.moveable,
+                        resizable: self.resizable,
+                        closable: self.closable,
+                        zoomable: self.zoomable,
+                        has_help: self.help_topic.is_some(),
+                    };
+                    let local_bounds = Rect::from_origin_size(Point::new(0, 0), self.bounds.size());
+                    match arrange::chrome_hit(local_bounds, mouse.pos, flags) {
+                        arrange::ChromeHit::Close => {
+                            ctx.post(CM_CLOSE);
+                            return EventResult::Consumed;
                         }
-                    }
-                    if self.zoomable {
-                        if let Some(span) = Frame::zoom_span(self.bounds.width(), has_help) {
-                            if span.contains(&mouse.pos.x) {
-                                ctx.post(CM_ZOOM);
-                                return EventResult::Consumed;
-                            }
+                        arrange::ChromeHit::Zoom => {
+                            ctx.post(CM_ZOOM);
+                            return EventResult::Consumed;
                         }
-                    }
-                    if has_help {
-                        if let Some(span) = Frame::help_span(self.bounds.width()) {
-                            if span.contains(&mouse.pos.x) {
-                                ctx.post(CM_HELP);
-                                return EventResult::Consumed;
-                            }
+                        arrange::ChromeHit::Help => {
+                            ctx.post(CM_HELP);
+                            return EventResult::Consumed;
                         }
+                        arrange::ChromeHit::Move
+                        | arrange::ChromeHit::Resize
+                        | arrange::ChromeHit::None => {}
                     }
                 }
                 if self.handle_scroll_bar_click(mouse.pos, mouse.kind, true, ctx)

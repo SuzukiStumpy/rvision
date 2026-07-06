@@ -37,6 +37,7 @@
 #![warn(missing_docs)]
 
 pub mod app;
+pub mod arrange;
 pub mod backend;
 pub mod buffer;
 pub mod canvas;

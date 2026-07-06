@@ -7,6 +7,10 @@
 //! - **Window ▸ New Window** opens another window, cascaded from the last.
 //! - Drag a window's title bar to move it; drag its bottom-right corner to
 //!   resize it. Clicking anywhere on a window raises it to the top.
+//! - **Window ▸ Cascade**/**Tile** (`F7`/`F8`) re-lay every open, non-zoomed
+//!   window out via `Desktop::cascade`/`Desktop::tile` (ADR 0033) — try both
+//!   with a handful of windows open, some hidden, and one zoomed (the zoomed
+//!   one is left alone; the toolbox, if hidden, isn't touched either).
 //! - `Ctrl-N` opens a window, `Ctrl-W` closes the active one, `F5` zooms/
 //!   restores it, `F6` cycles focus forward (Window ▸ Next/Previous covers
 //!   both directions).
@@ -57,6 +61,8 @@ use rvision::widgets::{
 // framework-reserved command Desktop/Shell themselves already act on.
 const CM_NEW_WINDOW: Command = Command(CM_USER + 1);
 const CM_TOGGLE_TOOLBOX: Command = Command(CM_USER + 2);
+const CM_CASCADE: Command = Command(CM_USER + 3);
+const CM_TILE: Command = Command(CM_USER + 4);
 
 /// A small hand-authored help document (ADR 0013) just to give the demo's
 /// `HelpWindow` something real to browse. Each document window and the
@@ -83,6 +89,8 @@ Ctrl+N   New Window
 Ctrl+W   Close
 F5       Zoom
 F6       Next
+F7       Cascade
+F8       Tile
 F9       Toggle Toolbox
 </pre>
 
@@ -196,6 +204,8 @@ impl Mdi {
                 }
                 Event::Command(cmd) if cmd == CM_NEW_WINDOW => self.open_new_window(),
                 Event::Command(cmd) if cmd == CM_TOGGLE_TOOLBOX => self.toggle_toolbox(),
+                Event::Command(cmd) if cmd == CM_CASCADE => self.shell.desktop_mut().cascade(),
+                Event::Command(cmd) if cmd == CM_TILE => self.shell.desktop_mut().tile(),
                 // CM_HELP isn't intercepted here at all — Shell::with_help
                 // (below) catches it natively (ADR 0021), so it just falls
                 // to the ordinary re-dispatch arm like ADR 0016's CM_CLOSE/
@@ -248,6 +258,8 @@ fn main() -> io::Result<()> {
                     MenuItem::new("Zoom", CM_ZOOM).with_shortcut("F5"),
                     MenuItem::new("Next", CM_NEXT).with_shortcut("F6"),
                     MenuItem::new("Previous", CM_PREV).with_shortcut("Shift-F6"),
+                    MenuItem::new("Cascade", CM_CASCADE).with_shortcut("F7"),
+                    MenuItem::new("Tile", CM_TILE).with_shortcut("F8"),
                     MenuItem::new("Toggle Toolbox", CM_TOGGLE_TOOLBOX).with_shortcut("F9"),
                 ],
             ),
@@ -314,6 +326,16 @@ fn main() -> io::Result<()> {
                 "F6",
                 "Next",
                 Accelerator::new(KeyEvent::new(KeyCode::F(6), Modifiers::NONE), CM_NEXT),
+            ),
+            StatusItem::new(
+                "F7",
+                "Cascade",
+                Accelerator::new(KeyEvent::new(KeyCode::F(7), Modifiers::NONE), CM_CASCADE),
+            ),
+            StatusItem::new(
+                "F8",
+                "Tile",
+                Accelerator::new(KeyEvent::new(KeyCode::F(8), Modifiers::NONE), CM_TILE),
             ),
             StatusItem::new(
                 "F9",
