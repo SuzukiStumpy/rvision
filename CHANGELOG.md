@@ -1,5 +1,18 @@
 # Changelog
 
+## [2.1.0](https://github.com/SuzukiStumpy/rvision/compare/v2.0.2...v2.1.0) (2026-07-06)
+
+
+### Features
+
+* add Window::arrangeable and Window::topmost flags ([83c3a96](https://github.com/SuzukiStumpy/rvision/commit/83c3a9608ee5678a620d81572e498844b188764a))
+* extract shared window-arrangement geometry into rvision::arrange ([117fcc1](https://github.com/SuzukiStumpy/rvision/commit/117fcc12bc1ddad52e0533dd6e226b7f4e43b320))
+
+
+### Bug Fixes
+
+* fill the desktop's own local frame on zoom, not its parent-relative bounds ([08e7240](https://github.com/SuzukiStumpy/rvision/commit/08e72407f802cc53c7f017e99565509f6a70549f))
+
 ## [2.0.2](https://github.com/SuzukiStumpy/rvision/compare/v2.0.1...v2.0.2) (2026-07-05)
 
 
