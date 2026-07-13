@@ -283,6 +283,21 @@ impl Window {
         )
     }
 
+    /// The interior view, for reaching its concrete type via
+    /// [`AsAny`](crate::view::AsAny) (ADR 0036) — e.g.
+    /// [`Desktop::content_mut`](super::Desktop::content_mut). Call `.as_any()`
+    /// on the returned `&dyn View` itself, not on a `Box<dyn View>` — the
+    /// latter also satisfies the blanket `AsAny` impl directly and shadows
+    /// the concrete type underneath (see ADR 0036).
+    pub fn interior(&self) -> &dyn View {
+        self.interior.as_ref()
+    }
+
+    /// The mutable counterpart of [`interior`](Self::interior) (ADR 0036).
+    pub fn interior_mut(&mut self) -> &mut dyn View {
+        self.interior.as_mut()
+    }
+
     /// Whether a title-bar drag can move the window — [`Desktop`](super::Desktop)
     /// consults this before starting a move session (ADR 0016).
     pub fn is_moveable(&self) -> bool {
@@ -1551,6 +1566,42 @@ mod tests {
                 rect(1, 1, 78, 22), // maximised: interior of the full desktop
                 rect(1, 1, 18, 6),  // restored: interior of the original bounds
             ]
+        );
+    }
+
+    // --- Interior access for downcasting (ADR 0036) ---
+
+    /// A trivial interior carrying one field, so a test can prove a
+    /// downcast round-trips the right instance.
+    struct Tagged {
+        id: u16,
+    }
+
+    impl View for Tagged {
+        fn bounds(&self) -> Rect {
+            rect(0, 0, 1, 1)
+        }
+        fn draw(&self, _canvas: &mut Canvas) {}
+    }
+
+    #[test]
+    fn interior_reaches_the_concrete_type_via_downcast() {
+        let w = plain(rect(0, 0, 10, 4), Box::new(Tagged { id: 9 }));
+        let tagged = w.interior().as_any().downcast_ref::<Tagged>();
+        assert_eq!(tagged.map(|t| t.id), Some(9));
+    }
+
+    #[test]
+    fn interior_mut_allows_mutation_through_the_concrete_type() {
+        let mut w = plain(rect(0, 0, 10, 4), Box::new(Tagged { id: 1 }));
+        w.interior_mut()
+            .as_any_mut()
+            .downcast_mut::<Tagged>()
+            .unwrap()
+            .id = 5;
+        assert_eq!(
+            w.interior().as_any().downcast_ref::<Tagged>().unwrap().id,
+            5
         );
     }
 }

@@ -18,6 +18,30 @@ use crate::command::{Command, CommandSet};
 use crate::event::{Event, EventResult, KeyCode, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect};
 use crate::widgets::Menu;
+use std::any::Any;
+
+/// Downcast access to a [`View`]'s concrete type via [`std::any::Any`] (ADR
+/// 0036) — e.g. an owning application reaching a specific window's content
+/// by id, from outside `draw`/`handle_event` dispatch. Blanket-implemented
+/// for every `'static` type (every real `View` already is one, since
+/// `Box<dyn View>` — the only way one is ever stored — implies it), so no
+/// existing `View` implementor needs to change to get it.
+pub trait AsAny: Any {
+    /// Reaches this view's concrete type.
+    fn as_any(&self) -> &dyn Any;
+    /// The mutable counterpart of [`as_any`](Self::as_any).
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+impl<T: Any> AsAny for T {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
 
 /// One node of the UI tree.
 ///
@@ -25,7 +49,7 @@ use crate::widgets::Menu;
 /// default [`focusable`](View::focusable) is `false`, so a passive leaf (like
 /// [`StaticText`]) only implements [`bounds`](View::bounds) and
 /// [`draw`](View::draw).
-pub trait View {
+pub trait View: AsAny {
     /// The view's rectangle in its **owner's** coordinate space.
     fn bounds(&self) -> Rect;
 
@@ -1632,5 +1656,42 @@ mod tests {
         let ctx = Context::new(&cs);
         assert!(!ctx.commands().is_enabled(CM_OK));
         assert!(ctx.commands().is_enabled(CM_CANCEL));
+    }
+
+    // --- `Any` downcast access (ADR 0036) ---
+
+    // `.as_any()` must be called on an already-`&dyn View`/`&mut dyn View`
+    // receiver, never directly on a `Box<dyn View>` — `Box<dyn View>` is
+    // itself `'static`, so it also matches `impl<T: Any> AsAny for T`
+    // directly, and method resolution prefers that over deref-ing into the
+    // trait object's vtable, silently downcasting "the box" instead of the
+    // concrete view inside it. `Window::interior`/`interior_mut` (ADR 0036)
+    // return `&dyn View`/`&mut dyn View` precisely so real callers can't hit
+    // this the way a naive test easily can.
+
+    #[test]
+    fn as_any_downcasts_a_boxed_view_back_to_its_concrete_type() {
+        let log: Log = Log::default();
+        let boxed: Box<dyn View> = Probe::new(7, rect(0, 0, 5, 1), false, &log).boxed();
+        let view: &dyn View = boxed.as_ref();
+        let concrete = view.as_any().downcast_ref::<Probe>();
+        assert_eq!(concrete.map(|p| p.id), Some(7));
+    }
+
+    #[test]
+    fn as_any_mut_allows_mutation_through_the_concrete_type() {
+        let log: Log = Log::default();
+        let mut boxed: Box<dyn View> = Probe::new(1, rect(0, 0, 5, 1), false, &log).boxed();
+        let view: &mut dyn View = boxed.as_mut();
+        view.as_any_mut().downcast_mut::<Probe>().unwrap().id = 42;
+        let view: &dyn View = boxed.as_ref();
+        assert_eq!(view.as_any().downcast_ref::<Probe>().unwrap().id, 42);
+    }
+
+    #[test]
+    fn downcasting_to_the_wrong_concrete_type_is_none() {
+        let boxed: Box<dyn View> = Box::new(StaticText::new(rect(0, 0, 5, 1), "x", Style::new()));
+        let view: &dyn View = boxed.as_ref();
+        assert!(view.as_any().downcast_ref::<Probe>().is_none());
     }
 }

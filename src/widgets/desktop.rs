@@ -274,6 +274,19 @@ impl Desktop {
             .map(|(_, w)| w)
     }
 
+    /// `id`'s window's interior content, downcast to concrete type `T`, or
+    /// `None` if `id` is unknown or its interior isn't a `T` (ADR 0036) — the
+    /// seam an owning application uses to reach its own content by id from
+    /// outside `draw`/`handle_event` dispatch, composing
+    /// [`window_mut`](Self::window_mut) → [`Window::interior_mut`] →
+    /// downcast in one call.
+    pub fn content_mut<T: 'static>(&mut self, id: WindowId) -> Option<&mut T> {
+        self.window_mut(id)?
+            .interior_mut()
+            .as_any_mut()
+            .downcast_mut::<T>()
+    }
+
     /// Repositions the desktop (the shell calls this as the terminal resizes).
     pub fn set_bounds(&mut self, bounds: Rect) {
         self.bounds = bounds;
@@ -1756,5 +1769,53 @@ mod tests {
         desk.handle_event(&right_click, &mut ctx);
         let req = ctx.take_context_menu_request().unwrap();
         assert_eq!(req.at, Point::new(10, 4));
+    }
+
+    // --- Concrete content access by id (ADR 0036) ---
+
+    /// A trivial interior carrying one field, so a test can prove
+    /// `content_mut` reaches the right instance.
+    struct Tagged {
+        id: u16,
+    }
+
+    impl View for Tagged {
+        fn bounds(&self) -> Rect {
+            rect(0, 0, 1, 1)
+        }
+        fn draw(&self, _canvas: &mut Canvas) {}
+    }
+
+    fn tagged_window(id: u16, bounds: Rect) -> Window {
+        Window::new(bounds, "W", &Theme::default(), Box::new(Tagged { id }))
+    }
+
+    #[test]
+    fn content_mut_downcasts_to_the_concrete_interior_type() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk.open(tagged_window(9, rect(0, 0, 10, 4)));
+        assert_eq!(desk.content_mut::<Tagged>(id).map(|t| t.id), Some(9));
+    }
+
+    #[test]
+    fn content_mut_allows_mutation_through_the_concrete_type() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk.open(tagged_window(1, rect(0, 0, 10, 4)));
+        desk.content_mut::<Tagged>(id).unwrap().id = 7;
+        assert_eq!(desk.content_mut::<Tagged>(id).unwrap().id, 7);
+    }
+
+    #[test]
+    fn content_mut_is_none_for_an_unknown_window_id() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        desk.open(tagged_window(1, rect(0, 0, 10, 4)));
+        assert!(desk.content_mut::<Tagged>(WindowId(9999)).is_none());
+    }
+
+    #[test]
+    fn content_mut_is_none_for_the_wrong_concrete_type() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 20), Cell::default());
+        let id = desk.open(tagged_window(1, rect(0, 0, 10, 4)));
+        assert!(desk.content_mut::<Offerer>(id).is_none());
     }
 }
