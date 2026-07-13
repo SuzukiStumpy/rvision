@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.2.0](https://github.com/SuzukiStumpy/rvision/compare/v2.1.0...v2.2.0) (2026-07-13)
+
+
+### Features
+
+* coalesce present's terminal writes into runs ([88d0bbd](https://github.com/SuzukiStumpy/rvision/commit/88d0bbd543e3cb49abd54dc1eb379dda20dc8d91))
+
+
+### Performance Improvements
+
+* coalesce present's terminal writes into runs ([6317565](https://github.com/SuzukiStumpy/rvision/commit/6317565b13ca1b9d22a90da9b479611f1194cb9c))
+
 ## [2.1.0](https://github.com/SuzukiStumpy/rvision/compare/v2.0.2...v2.1.0) (2026-07-06)
 
 
