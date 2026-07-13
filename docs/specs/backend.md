@@ -78,6 +78,10 @@ impl Backend for TestBackend { /* ... */ }
   pure `map_event` function (the only unit-tested part — no TTY needed). A
   bracketed paste maps to `Event::Paste` (ADR 0012); unmapped crossterm events
   (focus, key *release*) become `Ok(None)`.
+- `present` groups `frame.diff(&front)` into same-row, column-contiguous,
+  identically-styled runs (a pure `coalesce_runs`, unit-tested without a TTY
+  the same way `map_event` is) before writing: one `MoveTo` + one style set +
+  one `Print` per run, not per cell (ADR 0035).
 - `set_clipboard` writes the OSC 52 escape (the editor's ADR 0021); a hand-rolled Base64
   encoder lives in `osc52`.
 - On a resize it updates its cached `size`, blanks its front buffer, and clears the
@@ -95,10 +99,12 @@ loop (Phase 2), which draws into a back buffer then calls `present`. The real
   composed frame (box + text) makes `to_text` equal the frame; presenting the
   same frame twice reports zero changes the second time; a one-cell change
   reports exactly that cell; `presents` counts calls.
+- **Run coalescing (ADR 0035, `coalesce_runs`):** an empty diff coalesces to no
+  runs; adjacent same-style cells merge into one run; a style change, a
+  column gap, or a row change each start a new run; a wide grapheme's
+  continuation cell is skipped but still advances the run.
 
 ## Open questions
 
 - Hardware cursor position (show/hide/move) is added when the editor needs it
   (Phase 6) — likely a `set_cursor(Option<Point>)` on the trait.
-- `present` re-specifies fg/bg/attrs for every changed cell; tracking the current
-  terminal style to emit fewer escapes is a later optimisation.

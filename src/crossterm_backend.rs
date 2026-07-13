@@ -10,7 +10,8 @@
 
 use crate::backend::{Backend, EventSource};
 use crate::buffer::Buffer;
-use crate::color::{Attributes, Color, Color16};
+use crate::cell::Cell;
+use crate::color::{Attributes, Color, Color16, Style};
 use crate::event::{Event, KeyCode, KeyEvent, Modifiers, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Size};
 use std::io::{self, Write};
@@ -89,20 +90,14 @@ impl Backend for CrosstermBackend {
 
     fn present(&mut self, frame: &Buffer) -> io::Result<()> {
         let mut out = io::stdout().lock();
-        for (p, cell) in frame.diff(&self.front) {
-            // A wide grapheme's continuation cell (width 0) is covered by the
-            // grapheme to its left; never emit it on its own.
-            if cell.width() == 0 {
-                continue;
-            }
-            let style = cell.style();
-            out.queue(MoveTo(p.x as u16, p.y as u16))?;
-            // Reset first so each cell fully specifies its own appearance.
+        for run in coalesce_runs(frame.diff(&self.front)) {
+            out.queue(MoveTo(run.start_col as u16, run.row as u16))?;
+            // Reset first so each run fully specifies its own appearance.
             out.queue(SetAttribute(Attribute::Reset))?;
-            out.queue(SetForegroundColor(to_ct_color(style.fg)))?;
-            out.queue(SetBackgroundColor(to_ct_color(style.bg)))?;
-            queue_attrs(&mut out, style.attrs)?;
-            out.queue(Print(cell.grapheme()))?;
+            out.queue(SetForegroundColor(to_ct_color(run.style.fg)))?;
+            out.queue(SetBackgroundColor(to_ct_color(run.style.bg)))?;
+            queue_attrs(&mut out, run.style.attrs)?;
+            out.queue(Print(run.text))?;
         }
         out.flush()?;
         self.front = frame.clone();
@@ -356,9 +351,149 @@ fn queue_attrs(out: &mut impl Write, attrs: Attributes) -> io::Result<()> {
     Ok(())
 }
 
+/// A maximal run of same-row, column-contiguous, identically-styled cells
+/// from a diff — the unit [`present`](CrosstermBackend::present) actually
+/// writes: one cursor move and one style change cover the whole run, however
+/// many cells it spans (ADR 0035).
+#[derive(Debug, PartialEq)]
+struct Run {
+    row: i16,
+    start_col: i16,
+    style: Style,
+    text: String,
+    /// The column just past the run's last cell — where the next cell would
+    /// need to land to extend it. Tracked separately from `text.len()`/
+    /// `text.chars().count()` since a run's width in columns and its byte or
+    /// character length can all differ (tabs aren't cells, but wide
+    /// graphemes are two columns for one `Print`-able grapheme).
+    end_col: i16,
+}
+
+/// Groups `diff` (in the row-major order [`Buffer::diff`] always returns)
+/// into [`Run`]s. Pure — no I/O, so this is the unit-tested core of
+/// `present`, mirroring how `map_event` is the unit-tested core of
+/// `poll_event` (this module's doc comment).
+fn coalesce_runs(diff: Vec<(Point, &Cell)>) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    for (p, cell) in diff {
+        // A wide grapheme's continuation cell (width 0) is covered by the
+        // grapheme to its left; it carries no glyph of its own to print, but
+        // the grapheme before it already claimed this column via `end_col`.
+        if cell.width() == 0 {
+            continue;
+        }
+        let style = cell.style();
+        let width = cell.width() as i16;
+        if let Some(last) = runs.last_mut() {
+            if last.row == p.y && last.style == style && last.end_col == p.x {
+                use std::fmt::Write as _;
+                let _ = write!(last.text, "{}", cell.grapheme());
+                last.end_col += width;
+                continue;
+            }
+        }
+        let mut text = String::new();
+        use std::fmt::Write as _;
+        let _ = write!(text, "{}", cell.grapheme());
+        runs.push(Run {
+            row: p.y,
+            start_col: p.x,
+            style,
+            text,
+            end_col: p.x + width,
+        });
+    }
+    runs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cell::Grapheme;
+    use crate::color::{Color, Color16};
+
+    // --- run coalescing (ADR 0035) ---
+
+    fn cell(g: char, style: Style) -> Cell {
+        Cell::from_char(g, style)
+    }
+
+    #[test]
+    fn coalesce_runs_of_an_empty_diff_is_empty() {
+        assert_eq!(coalesce_runs(vec![]), vec![]);
+    }
+
+    #[test]
+    fn adjacent_same_style_cells_merge_into_one_run() {
+        let style = Style::new().fg(Color::Named(Color16::Red));
+        let a = cell('a', style);
+        let b = cell('b', style);
+        let diff = vec![(Point::new(0, 0), &a), (Point::new(1, 0), &b)];
+        let runs = coalesce_runs(diff);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].row, 0);
+        assert_eq!(runs[0].start_col, 0);
+        assert_eq!(runs[0].style, style);
+        assert_eq!(runs[0].text, "ab");
+    }
+
+    #[test]
+    fn a_style_change_starts_a_new_run() {
+        let a = cell('a', Style::new().fg(Color::Named(Color16::Red)));
+        let b = cell('b', Style::new().fg(Color::Named(Color16::Blue)));
+        let diff = vec![(Point::new(0, 0), &a), (Point::new(1, 0), &b)];
+        let runs = coalesce_runs(diff);
+        assert_eq!(
+            runs.len(),
+            2,
+            "a style change must not merge into the prior run"
+        );
+    }
+
+    #[test]
+    fn a_column_gap_starts_a_new_run() {
+        let style = Style::new();
+        let a = cell('a', style);
+        let b = cell('b', style);
+        // b sits at column 2, not the 1 that would be contiguous with a.
+        let diff = vec![(Point::new(0, 0), &a), (Point::new(2, 0), &b)];
+        let runs = coalesce_runs(diff);
+        assert_eq!(
+            runs.len(),
+            2,
+            "a gap in the diff must not merge into one run"
+        );
+    }
+
+    #[test]
+    fn a_row_change_starts_a_new_run_even_at_the_same_column() {
+        let style = Style::new();
+        let a = cell('a', style);
+        let b = cell('b', style);
+        let diff = vec![(Point::new(0, 0), &a), (Point::new(0, 1), &b)];
+        let runs = coalesce_runs(diff);
+        assert_eq!(runs.len(), 2, "runs never cross a row boundary");
+    }
+
+    #[test]
+    fn a_wide_graphemes_continuation_cell_is_skipped_but_the_run_still_advances() {
+        let style = Style::new();
+        let wide = Cell::new(Grapheme::new("\u{1F600}"), style); // an emoji, width 2
+        let cont = Cell::continuation(style);
+        let c = cell('c', style);
+        let diff = vec![
+            (Point::new(0, 0), &wide),
+            (Point::new(1, 0), &cont),
+            (Point::new(2, 0), &c),
+        ];
+        let runs = coalesce_runs(diff);
+        assert_eq!(
+            runs.len(),
+            1,
+            "the continuation cell rides along without breaking the run"
+        );
+        assert_eq!(runs[0].text, "\u{1F600}c");
+    }
 
     // Tracer bullet: Ctrl-Q survives the trip across the seam as our own type.
     #[test]
