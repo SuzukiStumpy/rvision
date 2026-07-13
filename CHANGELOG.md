@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0](https://github.com/SuzukiStumpy/rvision/compare/v2.2.0...v2.3.0) (2026-07-13)
+
+
+### Features
+
+* add Any-based downcast access to a Window's interior content ([7c76288](https://github.com/SuzukiStumpy/rvision/commit/7c76288099db507a8aa867f8f49f9e2d33ef3edd))
+
 ## [2.2.0](https://github.com/SuzukiStumpy/rvision/compare/v2.1.0...v2.2.0) (2026-07-13)
 
 
