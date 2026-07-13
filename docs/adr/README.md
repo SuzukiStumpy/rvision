@@ -47,5 +47,6 @@ workspace from the start, so it kept its original number unchanged.
 | [0032](0032-status-content-per-view-protocol.md) | Status content is a per-view protocol (`View::status_text`), hosted by `Window`'s frame or `Shell`'s desktop status row |
 | [0033](0033-extract-window-arrangement-geometry.md) | Extract shared window-arrangement geometry (chrome hit-testing, drag sessions, cascade/tile) into `rvision::arrange` |
 | [0034](0034-topmost-pinned-desktop-windows.md) | `topmost`-pinned `Desktop` windows: a docked toolbox stays above ordinary windows regardless of raise order |
+| [0035](0035-coalesce-terminal-writes-into-runs.md) | Coalesce `CrosstermBackend::present`'s writes into same-row, same-style runs instead of one write per changed cell |
 
 New decision? Copy [`0000-template.md`](0000-template.md).
