@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.4.0](https://github.com/SuzukiStumpy/rvision/compare/v2.3.0...v2.4.0) (2026-07-14)
+
+
+### Features
+
+* add a tabbed-pages widget (widgets::TabbedPages), plus a stale nested-focus fix (roadmap [#6](https://github.com/SuzukiStumpy/rvision/issues/6), ADR 0038) ([ecb2fbc](https://github.com/SuzukiStumpy/rvision/commit/ecb2fbc3ab4ba9649a88c2248bd67e7d4a187354))
+* add a window-list dialog (widgets::WindowList) ([d9e429d](https://github.com/SuzukiStumpy/rvision/commit/d9e429d6a3aeeee7b463cd0697502682b6e8ee79))
+
 ## [2.3.0](https://github.com/SuzukiStumpy/rvision/compare/v2.2.0...v2.3.0) (2026-07-13)
 
 
