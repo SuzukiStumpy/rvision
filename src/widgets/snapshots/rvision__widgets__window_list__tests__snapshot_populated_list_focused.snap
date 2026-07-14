@@ -1,0 +1,14 @@
+---
+source: src/widgets/window_list.rs
+assertion_line: 500
+expression: render(&w)
+---
+Alpha                         
+Beta                          
+                              
+                              
+                              
+                              
+                              
+                              
+    Close

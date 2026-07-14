@@ -34,6 +34,10 @@
 //!   topic's link is followable (ADR 0020): `Ctrl+Down`/`Ctrl+Up` cycle the
 //!   page's current link, `Enter` follows it, or just click it — either
 //!   jumps the list and page to the Windows topic.
+//! - `Alt-0` (or Window ▸ Window List...) opens a live list of every open
+//!   window (ADR 0037): double-click a row (or select + `Enter`) raises it
+//!   and dismisses the list; select a row + **Close** terminates it and
+//!   leaves the list open, refreshed — try closing several in one visit.
 //! - `Alt-X` (or File ▸ Exit) quits; the terminal is always restored, even on
 //!   a panic, thanks to the RAII backend (ADR 0001).
 
@@ -48,8 +52,8 @@ use rvision::canvas::Canvas;
 use rvision::cell::Cell;
 use rvision::color::Style;
 use rvision::command::{
-    Accelerator, CM_CLOSE, CM_HELP, CM_NEXT, CM_PREV, CM_QUIT, CM_USER, CM_ZOOM, Command,
-    CommandSet,
+    Accelerator, CM_CLOSE, CM_HELP, CM_NEXT, CM_PREV, CM_QUIT, CM_USER, CM_WINDOW_LIST, CM_ZOOM,
+    Command, CommandSet,
 };
 use rvision::crossterm_backend::CrosstermBackend;
 use rvision::event::{Event, EventResult, KeyCode, KeyEvent, Modifiers};
@@ -214,7 +218,9 @@ impl Mdi {
                 // CM_HELP isn't intercepted here at all — Shell::with_help
                 // (below) catches it natively (ADR 0021), so it just falls
                 // to the ordinary re-dispatch arm like ADR 0016's CM_CLOSE/
-                // CM_ZOOM/CM_NEXT/CM_PREV already do.
+                // CM_ZOOM/CM_NEXT/CM_PREV already do. CM_WINDOW_LIST and its
+                // two bubbled-back commands are the same story: `Shell`
+                // handles them unconditionally, no opt-in needed (ADR 0037).
                 _ => {
                     if budget == 0 {
                         break;
@@ -266,6 +272,7 @@ fn main() -> io::Result<()> {
                     MenuItem::new("Cascade", CM_CASCADE).with_shortcut("F7"),
                     MenuItem::new("Tile", CM_TILE).with_shortcut("F8"),
                     MenuItem::new("Toggle Toolbox", CM_TOGGLE_TOOLBOX).with_shortcut("F9"),
+                    MenuItem::new("Window List...", CM_WINDOW_LIST).with_shortcut("Alt-0"),
                 ],
             ),
             Menu::new(
@@ -360,6 +367,14 @@ fn main() -> io::Result<()> {
                 "F1",
                 "Help",
                 Accelerator::new(KeyEvent::new(KeyCode::F(1), Modifiers::NONE), CM_HELP),
+            ),
+            StatusItem::new(
+                "Alt-0",
+                "Windows",
+                Accelerator::new(
+                    KeyEvent::new(KeyCode::Char('0'), Modifiers::ALT),
+                    CM_WINDOW_LIST,
+                ),
             ),
             StatusItem::new(
                 "Alt-X",

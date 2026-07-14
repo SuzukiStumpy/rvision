@@ -274,6 +274,14 @@ impl Desktop {
             .map(|(_, w)| w)
     }
 
+    /// Every open window (hidden or not) and its id, in current stack order
+    /// (bottom to top — see the module doc's z-order note). `widgets::WindowList`'s
+    /// use case (ADR 0037): building a snapshot to show, without exposing the
+    /// backing `Vec` itself.
+    pub fn windows(&self) -> impl Iterator<Item = (WindowId, &Window)> {
+        self.windows.iter().map(|(id, w)| (*id, w))
+    }
+
     /// `id`'s window's interior content, downcast to concrete type `T`, or
     /// `None` if `id` is unknown or its interior isn't a `T` (ADR 0036) — the
     /// seam an owning application uses to reach its own content by id from
@@ -881,6 +889,17 @@ mod tests {
         let b = desk.open(blank_window_at(rect(0, 0, 10, 4)));
         assert_ne!(a, b);
         assert_eq!(desk.active_id(), Some(b));
+    }
+
+    #[test]
+    fn windows_enumerates_every_open_window_in_stack_order_including_hidden() {
+        let mut desk = Desktop::new(rect(0, 0, 40, 12), Cell::default());
+        let a = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        let b = desk.open(blank_window_at(rect(0, 0, 10, 4)));
+        desk.hide(b);
+
+        let ids: Vec<WindowId> = desk.windows().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec![a, b]);
     }
 
     #[test]

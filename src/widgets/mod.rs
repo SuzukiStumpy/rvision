@@ -41,6 +41,7 @@ mod text_edit;
 mod theme_editor;
 mod theme_picker;
 mod window;
+mod window_list;
 
 pub use background::Background;
 pub use button::Button;
@@ -67,3 +68,4 @@ pub use text_area::{CursorPosition, TextArea};
 pub use theme_editor::{ThemeEditor, ThemeEditorHandle};
 pub use theme_picker::{ThemePicker, ThemePickerResult};
 pub use window::{Placement, Window};
+pub use window_list::{WindowList, WindowListAction};

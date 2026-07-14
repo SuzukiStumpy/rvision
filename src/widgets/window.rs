@@ -368,6 +368,12 @@ impl Window {
         self.frame.set_title(title);
     }
 
+    /// The current title, forwarding to the frame (`widgets::WindowList`'s
+    /// own use case, ADR 0037: building a snapshot of open windows).
+    pub fn title(&self) -> &str {
+        self.frame.title()
+    }
+
     /// Where [`exec_view`](crate::app::Application::exec_view)/[`Desktop::open`](super::Desktop::open)
     /// should position this window at the start of its run.
     pub fn placement(&self) -> Placement {
@@ -920,6 +926,14 @@ mod tests {
         let text = buf.to_text();
         assert!(text.contains("New"));
         assert!(!text.contains("Old"));
+    }
+
+    #[test]
+    fn title_reads_back_the_constructed_title_and_follows_set_title() {
+        let mut w = Window::new(rect(0, 0, 20, 4), "Old", &theme(), blank());
+        assert_eq!(w.title(), "Old");
+        w.set_title("New");
+        assert_eq!(w.title(), "New");
     }
 
     // --- New Window/Dialog-unification behaviour (ADR 0016) ---

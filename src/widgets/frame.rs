@@ -179,6 +179,13 @@ impl Frame {
         self.title = title.to_string();
     }
 
+    /// The current title, exactly as last set — untruncated, even though
+    /// `draw_title` may show less (needed by `widgets::WindowList` to build
+    /// its own snapshot of open windows, ADR 0037).
+    pub fn title(&self) -> &str {
+        &self.title
+    }
+
     /// Whether a `width`-wide frame is wide enough to draw its glyphs — three
     /// (close/zoom/help) when `help` is set, two otherwise (ADR 0021's
     /// all-or-nothing gate: a narrow frame drops every glyph it would need
@@ -387,6 +394,14 @@ mod tests {
         let text = render(&frame, 20, 3);
         assert!(text.contains("New"));
         assert!(!text.contains("Old"));
+    }
+
+    #[test]
+    fn title_reads_back_the_constructed_title_and_follows_set_title() {
+        let mut frame = Frame::new("Old", Style::new(), Style::new());
+        assert_eq!(frame.title(), "Old");
+        frame.set_title("New");
+        assert_eq!(frame.title(), "New");
     }
 
     #[test]

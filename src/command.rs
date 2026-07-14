@@ -44,6 +44,22 @@ pub const CM_PREV: Command = Command(10);
 pub const CM_EDIT_FG: Command = Command(11);
 /// As `CM_EDIT_FG`, for the background colour.
 pub const CM_EDIT_BG: Command = Command(12);
+/// Open (or, if already open, refresh and re-centre) the window list
+/// (`widgets::WindowList`, ADR 0037). `Shell` handles this unconditionally,
+/// unlike `CM_HELP`'s opt-in — building the list needs only `Desktop`'s own
+/// state, which `Shell` already owns, not app-supplied data.
+pub const CM_WINDOW_LIST: Command = Command(13);
+/// Posted by `WindowList` when the user asks to bring a listed window to
+/// the front (double-click, or `Enter` on the highlighted row) and dismiss
+/// the list. Carries no payload — `Command` is a bare id — so the actual
+/// target is read back via `Desktop::content_mut::<WindowList>` (ADR 0036)
+/// by whatever hosts it (`Shell`, ADR 0037).
+pub const CM_WINDOW_LIST_ACTIVATE: Command = Command(14);
+/// Posted by `WindowList` when the user asks to close a listed window via
+/// its own Close button. As `CM_WINDOW_LIST_ACTIVATE`, the target is read
+/// back rather than carried; unlike activation, the list itself stays open
+/// afterward, refreshed.
+pub const CM_WINDOW_LIST_CLOSE: Command = Command(15);
 
 /// The first command id reserved for the **application**.
 ///

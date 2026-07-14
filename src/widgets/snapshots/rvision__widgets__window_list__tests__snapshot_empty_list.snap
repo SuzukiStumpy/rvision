@@ -1,0 +1,14 @@
+---
+source: src/widgets/window_list.rs
+assertion_line: 528
+expression: render(&w)
+---
+ No open windows.             
+                              
+                              
+                              
+                              
+                              
+                              
+                              
+    Close

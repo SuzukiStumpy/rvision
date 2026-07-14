@@ -13,14 +13,18 @@
 use crate::backend::{Backend, EventSource};
 use crate::buffer::Buffer;
 use crate::canvas::Canvas;
-use crate::command::{CM_HELP, CM_QUIT, Command, CommandSet};
+use crate::command::{
+    CM_HELP, CM_QUIT, CM_WINDOW_LIST, CM_WINDOW_LIST_ACTIVATE, CM_WINDOW_LIST_CLOSE, Command,
+    CommandSet,
+};
 use crate::event::{Event, EventResult, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect, Size};
 use crate::help::HelpContents;
 use crate::theme::{Role, Theme};
 use crate::view::{Context, View};
 use crate::widgets::{
-    ContextMenu, Desktop, HelpWindow, MenuBar, Placement, StatusLine, StatusPanel, Window, WindowId,
+    ContextMenu, Desktop, HelpWindow, MenuBar, Placement, StatusLine, StatusPanel, Window,
+    WindowId, WindowList, WindowListAction,
 };
 use std::collections::VecDeque;
 use std::io;
@@ -392,6 +396,13 @@ pub struct Shell {
     /// (ADR 0032) — `None` (the default) leaves `status_line` spanning the
     /// whole row exactly as before.
     status_panel: Option<StatusPanel>,
+    /// The singleton window-list window's id, if one is currently open
+    /// (ADR 0037) — `CM_WINDOW_LIST` closes and reopens this one, rather
+    /// than letting duplicates accumulate. Unlike `help_window`, handling
+    /// this needs no app-supplied data (`Desktop` already has everything),
+    /// so there is no `with_help`-style opt-in: `Shell` always handles
+    /// `CM_WINDOW_LIST`/`CM_WINDOW_LIST_ACTIVATE`/`CM_WINDOW_LIST_CLOSE`.
+    window_list: Option<WindowId>,
 }
 
 /// The three chrome regions for a terminal of `size`: the menu-bar row, the
@@ -464,6 +475,7 @@ impl Shell {
             help: None,
             help_window: None,
             status_panel: None,
+            window_list: None,
         };
         shell.relayout(size);
         shell
@@ -531,6 +543,72 @@ impl Shell {
             self.desktop.close(old_id, ctx);
         }
         self.help_window = Some(self.desktop.open(window));
+    }
+
+    /// A snapshot of every open window's id/title, excluding the window
+    /// list's own current window (if any) — shared by
+    /// [`open_window_list`](Self::open_window_list) (the initial/refreshed
+    /// build) and [`resolve_window_list_action`](Self::resolve_window_list_action)'s
+    /// post-`Close` refresh (ADR 0037).
+    fn window_list_entries(&self) -> Vec<(WindowId, String)> {
+        self.desktop
+            .windows()
+            .filter(|(id, _)| Some(*id) != self.window_list)
+            .map(|(id, w)| (id, w.title().to_string()))
+            .collect()
+    }
+
+    /// (Re)opens the singleton window-list window (ADR 0037), same
+    /// close-old/open-fresh-centred singleton shape as
+    /// [`open_help`](Self::open_help). Unlike `open_help`, needs no
+    /// app-supplied data — `Desktop`'s own state, read via
+    /// [`window_list_entries`](Self::window_list_entries), is the entire
+    /// input — which is why `CM_WINDOW_LIST` is handled unconditionally
+    /// rather than behind an opt-in.
+    fn open_window_list(&mut self, ctx: &mut Context) {
+        let entries = self.window_list_entries();
+        let area = self.desktop.bounds();
+        let window = WindowList::build(entries, area, "Window List", &self.theme);
+        if let Some(old_id) = self.window_list {
+            self.desktop.close(old_id, ctx);
+        }
+        self.window_list = Some(self.desktop.open(window));
+    }
+
+    /// Reads back what the window list's own interior recorded (ADR 0036's
+    /// downcast, per ADR 0037 — `WindowList` has no `Desktop` reference of
+    /// its own to act with) and applies it: `Activate` raises the target and
+    /// dismisses the list; `Close` closes the target and refreshes the
+    /// still-open list. A no-op if the list isn't open or nothing is
+    /// pending (e.g. a stray re-dispatch).
+    fn resolve_window_list_action(&mut self, ctx: &mut Context) {
+        let Some(list_id) = self.window_list else {
+            return;
+        };
+        let pending = self
+            .desktop
+            .content_mut::<WindowList>(list_id)
+            .and_then(WindowList::take_pending);
+        match pending {
+            Some(WindowListAction::Activate(target)) => {
+                // `show`, not `focus`: `Desktop::focus` deliberately no-ops
+                // on a hidden window (e.g. `edit`'s docked toolbox), but the
+                // whole point of picking one from this list is to bring it
+                // to front regardless of that state — a real gap a manual
+                // pass surfaced (ADR 0037).
+                self.desktop.show(target);
+                self.desktop.close(list_id, ctx);
+                self.window_list = None;
+            }
+            Some(WindowListAction::Close(target)) => {
+                self.desktop.close(target, ctx);
+                let entries = self.window_list_entries();
+                if let Some(list) = self.desktop.content_mut::<WindowList>(list_id) {
+                    list.set_entries(entries);
+                }
+            }
+            None => {}
+        }
     }
 
     /// Repositions the three children for a terminal of `size`. When a
@@ -669,6 +747,16 @@ impl View for Shell {
                         self.open_help(contents, ctx);
                         return EventResult::Consumed;
                     }
+                }
+                // Unconditional, unlike `CM_HELP` above — see `window_list`'s
+                // own doc comment and ADR 0037 for why.
+                if *command == CM_WINDOW_LIST {
+                    self.open_window_list(ctx);
+                    return EventResult::Consumed;
+                }
+                if *command == CM_WINDOW_LIST_ACTIVATE || *command == CM_WINDOW_LIST_CLOSE {
+                    self.resolve_window_list_action(ctx);
+                    return EventResult::Consumed;
                 }
                 self.desktop.handle_event(event, ctx)
             }
@@ -1624,6 +1712,181 @@ mod tests {
             "shows the newly resolved topic"
         );
         assert!(!text.contains("Home body."), "not still on the old one");
+    }
+
+    // --- CM_WINDOW_LIST handling (ADR 0037) ---
+
+    /// A shell with one window per `titles`, opened in order (so `windows()`
+    /// — and hence `WindowList`'s rows — land in the same order), plus the
+    /// ids `Desktop::open` minted for each.
+    fn shell_with_windows(size: Size, titles: &[&str]) -> (Shell, Vec<WindowId>) {
+        let theme = Theme::default();
+        let menu_bar = MenuBar::new(full(Size::new(size.width, 1)), vec![], &theme);
+        let mut desktop = Desktop::new(
+            Rect::from_origin_size(Point::new(0, 1), Size::new(size.width, size.height - 2)),
+            Cell::default(),
+        );
+        let ids = titles
+            .iter()
+            .enumerate()
+            .map(|(i, title)| {
+                desktop.open(Window::new(
+                    Rect::from_origin_size(Point::new(i as i16, 0), Size::new(10, 4)),
+                    title,
+                    &theme,
+                    blank_interior(),
+                ))
+            })
+            .collect();
+        let status = StatusLine::new(
+            Rect::from_origin_size(Point::new(0, size.height - 1), Size::new(size.width, 1)),
+            vec![],
+            theme.style(Role::StatusBar),
+            theme.style(Role::StatusKey),
+        );
+        (Shell::new(size, menu_bar, desktop, status, &theme), ids)
+    }
+
+    #[test]
+    fn cm_window_list_opens_a_window_listing_every_other_open_window() {
+        let (mut sh, ids) = shell_with_windows(Size::new(40, 10), &["Alpha", "Beta"]);
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        sh.handle_event(&Event::Command(CM_WINDOW_LIST), &mut ctx);
+
+        let list_id = sh.desktop_mut().active_id().unwrap();
+        assert!(
+            !ids.contains(&list_id),
+            "raised and active is the list itself, not one of the originals"
+        );
+
+        let mut frame = Buffer::new(Size::new(40, 10));
+        let mut canvas = Canvas::new(&mut frame);
+        sh.draw(&mut canvas);
+        let text = frame.to_text();
+        assert!(text.contains("Alpha"));
+        assert!(text.contains("Beta"));
+    }
+
+    #[test]
+    fn activating_a_listed_window_raises_it_and_dismisses_the_list() {
+        let (mut sh, ids) = shell_with_windows(Size::new(40, 10), &["Alpha", "Beta"]);
+        let alpha = ids[0];
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        sh.handle_event(&Event::Command(CM_WINDOW_LIST), &mut ctx);
+        let list_id = sh.desktop_mut().active_id().unwrap();
+
+        // Drives `WindowList`'s own real `handle_event` (Enter on the
+        // list, which defaults to its first row, Alpha) — the same widget
+        // behaviour its own unit tests exercise, not a shortcut.
+        sh.desktop_mut()
+            .content_mut::<WindowList>(list_id)
+            .unwrap()
+            .handle_event(
+                &Event::Key(KeyEvent::new(KeyCode::Enter, Modifiers::NONE)),
+                &mut ctx,
+            );
+        // `Root` would normally re-dispatch the command `WindowList` just
+        // posted from the top of the tree; these `Shell`-level tests feed
+        // it straight in, the same convention the `CM_HELP` tests above use.
+        sh.handle_event(&Event::Command(CM_WINDOW_LIST_ACTIVATE), &mut ctx);
+
+        assert_eq!(
+            sh.desktop_mut().active_id(),
+            Some(alpha),
+            "alpha raised to the front"
+        );
+        assert!(
+            sh.desktop_mut().window(list_id).is_none(),
+            "the list dismissed itself"
+        );
+    }
+
+    #[test]
+    fn activating_a_hidden_listed_window_shows_it_too_not_just_raises_it() {
+        // A manual pass surfaced this: `Desktop::focus` deliberately no-ops
+        // on a hidden window (e.g. a docked toolbox), but picking one from
+        // the list should bring it to front regardless (ADR 0037).
+        let (mut sh, ids) = shell_with_windows(Size::new(40, 10), &["Alpha", "Beta"]);
+        let beta = ids[1];
+        sh.desktop_mut().hide(beta);
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        sh.handle_event(&Event::Command(CM_WINDOW_LIST), &mut ctx);
+        let list_id = sh.desktop_mut().active_id().unwrap();
+
+        sh.desktop_mut()
+            .content_mut::<WindowList>(list_id)
+            .unwrap()
+            .handle_event(
+                &Event::Key(KeyEvent::new(KeyCode::Down, Modifiers::NONE)),
+                &mut ctx,
+            );
+        sh.desktop_mut()
+            .content_mut::<WindowList>(list_id)
+            .unwrap()
+            .handle_event(
+                &Event::Key(KeyEvent::new(KeyCode::Enter, Modifiers::NONE)),
+                &mut ctx,
+            );
+        sh.handle_event(&Event::Command(CM_WINDOW_LIST_ACTIVATE), &mut ctx);
+
+        assert_eq!(sh.desktop_mut().active_id(), Some(beta));
+        assert!(sh.desktop_mut().window(beta).unwrap().is_visible());
+    }
+
+    #[test]
+    fn closing_a_listed_window_terminates_it_and_leaves_the_list_open_refreshed() {
+        let (mut sh, ids) = shell_with_windows(Size::new(40, 10), &["Alpha", "Beta"]);
+        let alpha = ids[0];
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        sh.handle_event(&Event::Command(CM_WINDOW_LIST), &mut ctx);
+        let list_id = sh.desktop_mut().active_id().unwrap();
+
+        {
+            let list = sh.desktop_mut().content_mut::<WindowList>(list_id).unwrap();
+            // Tab from List to Close, then activate it — Alpha is selected
+            // by default.
+            list.handle_event(
+                &Event::Key(KeyEvent::new(KeyCode::Tab, Modifiers::NONE)),
+                &mut ctx,
+            );
+            list.handle_event(
+                &Event::Key(KeyEvent::new(KeyCode::Enter, Modifiers::NONE)),
+                &mut ctx,
+            );
+        }
+        sh.handle_event(&Event::Command(CM_WINDOW_LIST_CLOSE), &mut ctx);
+
+        assert!(sh.desktop_mut().window(alpha).is_none(), "alpha closed");
+        assert!(
+            sh.desktop_mut().window(list_id).is_some(),
+            "the list itself stays open"
+        );
+
+        let mut frame = Buffer::new(Size::new(40, 10));
+        let mut canvas = Canvas::new(&mut frame);
+        sh.draw(&mut canvas);
+        let text = frame.to_text();
+        assert!(!text.contains("Alpha"), "removed from the refreshed list");
+        assert!(text.contains("Beta"), "beta still listed");
+    }
+
+    #[test]
+    fn window_list_commands_are_a_safe_no_op_with_no_list_open() {
+        let (mut sh, _ids) = shell_with_windows(Size::new(40, 10), &["Alpha"]);
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        assert_eq!(
+            sh.handle_event(&Event::Command(CM_WINDOW_LIST_ACTIVATE), &mut ctx),
+            EventResult::Consumed
+        );
+        assert_eq!(
+            sh.handle_event(&Event::Command(CM_WINDOW_LIST_CLOSE), &mut ctx),
+            EventResult::Consumed
+        );
     }
 
     // --- Context menu anchor propagation (ADR 0019) ---
