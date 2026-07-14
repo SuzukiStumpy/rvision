@@ -150,6 +150,10 @@ impl View for GroupBox {
         self.interior.set_focused(focused);
     }
 
+    fn reset_focus(&mut self) {
+        self.interior.reset_focus();
+    }
+
     fn valid(&mut self, command: crate::command::Command, ctx: &mut Context) -> bool {
         self.interior.valid(command, ctx)
     }
@@ -464,6 +468,37 @@ mod tests {
         assert!(!*flag.borrow());
         gb.set_focused(true);
         assert!(*flag.borrow());
+    }
+
+    #[test]
+    fn reset_focus_forwards_to_the_interior_group() {
+        let children: Vec<Box<dyn View>> = vec![
+            Box::new(super::super::Button::new(
+                rect(0, 0, 8, 1),
+                "One",
+                CM_OK,
+                &theme(),
+            )),
+            Box::new(super::super::Button::new(
+                rect(0, 1, 8, 1),
+                "Two",
+                CM_OK,
+                &theme(),
+            )),
+        ];
+        let mut gb = GroupBox::new(rect(0, 0, 20, 4), "Box", children, &theme());
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        gb.handle_event(&key(KeyCode::Tab), &mut ctx);
+        assert_eq!(gb.interior.focused(), Some(1));
+
+        gb.reset_focus();
+
+        assert_eq!(
+            gb.interior.focused(),
+            Some(0),
+            "reset_focus reached the interior Group"
+        );
     }
 
     #[test]

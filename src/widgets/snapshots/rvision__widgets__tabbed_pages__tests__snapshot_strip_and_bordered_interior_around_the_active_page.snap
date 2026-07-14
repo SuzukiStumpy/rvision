@@ -1,0 +1,11 @@
+---
+source: src/widgets/tabbed_pages.rs
+assertion_line: 984
+expression: "render(&tp, 26, 6)"
+---
+  General │ Formatting    
+┌────────────────────────┐
+│General                 │
+│                        │
+│                        │
+└────────────────────────┘

@@ -113,6 +113,16 @@ pub trait View: AsAny {
         let _ = focused;
     }
 
+    /// Forgets any remembered internal focus position and snaps back to the
+    /// natural starting point (a [`Group`]'s first focusable child), so a
+    /// future [`set_focused(true)`](Self::set_focused) begins fresh instead
+    /// of resuming wherever it last was (ADR 0038). The default is a no-op —
+    /// only a composite that remembers an internal cursor needs to override
+    /// it. Does not itself claim focus (never calls `set_focused(true)` on
+    /// the new target): the caller decides whether/when this view actually
+    /// gains focus.
+    fn reset_focus(&mut self) {}
+
     /// What this view needs scrolled right now, or `None` if nothing does (ADR
     /// 0015). Queried every draw, like [`drop_shadow`](Self::drop_shadow): a
     /// composing owner (a [`Window`](crate::widgets::Window) first) reserves
@@ -580,6 +590,20 @@ impl View for Group {
         // (un)focuses whichever of our children currently holds it.
         if let Some(index) = self.focused {
             self.children[index].set_focused(focused);
+        }
+    }
+
+    fn reset_focus(&mut self) {
+        // Unfocus whichever child currently remembers holding focus, then
+        // repoint the cursor at the first focusable child — exactly
+        // `Group::new`'s own initial pick, re-run on demand (ADR 0038). Does
+        // not tell the new target it's focused; that's the caller's call.
+        let first = self.children.iter().position(|child| child.focusable());
+        if self.focused != first {
+            if let Some(old) = self.focused {
+                self.children[old].set_focused(false);
+            }
+            self.focused = first;
         }
     }
 
@@ -1119,6 +1143,71 @@ mod tests {
         assert!(!*leaf.borrow(), "the unfocus reached the grandchild");
         group.set_focused(true);
         assert!(*leaf.borrow());
+    }
+
+    // --- reset_focus (ADR 0038) ---
+
+    #[test]
+    fn reset_focus_unfocuses_the_current_child_and_repoints_to_the_first_focusable() {
+        let a = Rc::new(RefCell::new(false));
+        let b = Rc::new(RefCell::new(false));
+        let mut group = Group::new(
+            rect(0, 0, 10, 3),
+            vec![
+                Box::new(FocusSpy {
+                    bounds: rect(0, 0, 5, 1),
+                    focused: Rc::clone(&a),
+                }),
+                Box::new(FocusSpy {
+                    bounds: rect(0, 1, 5, 1),
+                    focused: Rc::clone(&b),
+                }),
+            ],
+        );
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        group.handle_event(&key(KeyCode::Tab), &mut ctx); // move onto the second child
+        assert_eq!(group.focused(), Some(1));
+        assert!(*b.borrow());
+
+        group.reset_focus();
+
+        assert_eq!(group.focused(), Some(0), "cursor snapped back to the first");
+        assert!(!*b.borrow(), "the old target was told it lost focus");
+        assert!(
+            !*a.borrow(),
+            "the new target is NOT told it gained focus yet \u{2014} that's the caller's call"
+        );
+    }
+
+    #[test]
+    fn reset_focus_is_a_no_op_when_already_on_the_first_focusable_child() {
+        let a = Rc::new(RefCell::new(false));
+        let mut group = Group::new(
+            rect(0, 0, 10, 3),
+            vec![Box::new(FocusSpy {
+                bounds: rect(0, 0, 5, 1),
+                focused: Rc::clone(&a),
+            })],
+        );
+        assert!(*a.borrow());
+        group.reset_focus();
+        assert_eq!(group.focused(), Some(0));
+        assert!(
+            *a.borrow(),
+            "no spurious unfocus when nothing actually needed to move"
+        );
+    }
+
+    #[test]
+    fn reset_focus_on_a_group_with_no_focusable_children_stays_none() {
+        let log: Log = Log::default();
+        let mut group = Group::new(
+            rect(0, 0, 20, 10),
+            vec![Probe::new(1, rect(0, 0, 5, 1), false, &log).boxed()],
+        );
+        group.reset_focus();
+        assert_eq!(group.focused(), None);
     }
 
     // --- Commands: posting, gating, and bubbling ---

@@ -115,7 +115,10 @@ interior: Group::new(interior_bounds, children).non_wrapping(),
 
 ## Open questions
 
-- Re-entry doesn't reset to the "natural" end for the entry direction
-  (first child for forward Tab, last for backward Shift-Tab) — it lands
-  wherever the nested group's focus was left. Revisit if a real use case
-  wants that ergonomic polish; nothing so far has needed it.
+- ~~Re-entry doesn't reset to the "natural" end for the entry direction...~~
+  Resolved by ADR 0038 (`View::reset_focus`) once `TabbedPages` became a
+  real use case with 2+ focusable children in a non-wrapping group: a caller
+  can now explicitly reset a group's remembered cursor back to its first
+  focusable child before a future fresh entry. Direction-aware re-entry
+  (landing at the *last* child for a backward entry) remains open — see
+  ADR 0038's own Open Questions.

@@ -4,11 +4,16 @@
 //! Run with `cargo run -p rvision --example dialogs`. It shows, in sequence:
 //!
 //! 1. a welcome message box (`Enter`/`Esc`);
-//! 2. a *Settings* dialog exercising every control — an input line, a check box,
-//!    a radio group inside a titled `GroupBox`, and OK/Cancel buttons.
-//!    `Tab`/`Shift-Tab` move focus, the arrows drive the radio group and
-//!    (when focused) the input caret, `Space` toggles the check box, `Enter`
-//!    is the default *OK*, `Esc` cancels;
+//! 2. a *Settings* dialog exercising every control, organized into a
+//!    `TabbedPages` strip — "General" (an input line, a check box) and
+//!    "Formatting" (a radio group inside a titled `GroupBox`) — plus
+//!    OK/Cancel buttons below it. Click a tab label, or use Left/Right while
+//!    the strip is focused, to switch; `Tab`/`Shift-Tab` cycle strip ⇄ the
+//!    active tab's content ⇄ OK/Cancel (escaping the whole widget once the
+//!    active page's own focus is exhausted). The arrows also drive the radio
+//!    group and (when focused) the input caret, `Space` toggles the check
+//!    box, `Enter` is the default *OK*, `Esc` cancels regardless of which tab
+//!    is showing;
 //! 3. a file *Open* dialog — type a name or pick from the list; `Enter` on a
 //!    folder navigates into it, `Enter` on a file (or *Open*) accepts;
 //! 4. a colour picker (`docs/specs/color_picker.md`) seeded at Cyan — arrows
@@ -37,7 +42,7 @@ use rvision::theme::{Role, Theme};
 use rvision::view::{Group, View};
 use rvision::widgets::{
     Button, CheckBox, ColorPicker, FileDialog, GroupBox, InputLine, Label, MessageBox,
-    RadioButtons, Window,
+    RadioButtons, TabbedPages, Window,
 };
 
 fn rect(x: i16, y: i16, w: i16, h: i16) -> Rect {
@@ -71,22 +76,55 @@ impl Program for Backdrop {
 
 /// A custom dialog wiring up an input line, a check box, a radio group, and the
 /// OK/Cancel buttons — interior coordinates have `(0, 0)` just inside the border.
+///
+/// The input line/check box and the radio group sit on separate `TabbedPages`
+/// tabs rather than all at once — "General" bundles the first two controls
+/// into its own `Group` (a page needing more than one control is the
+/// caller's own composition, not something `TabbedPages` builds for you);
+/// "Formatting" reuses the same `GroupBox`-wrapped `RadioButtons` as before,
+/// just repositioned to the tab's own local origin.
 fn settings_dialog(theme: &Theme) -> Window {
     let cancel = Command(3); // CM_CANCEL
-    let controls: Vec<Box<dyn View>> = vec![
-        Box::new(Label::new(rect(1, 1, 8, 1), "Name:", theme)),
-        Box::new(InputLine::new(rect(9, 1, 22, 1), theme).with_text("untitled.txt")),
-        Box::new(CheckBox::new(rect(1, 3, 28, 1), "Word wrap", theme).with_checked(true)),
-        Box::new(GroupBox::new(
-            rect(1, 5, 20, 5),
-            "Line endings",
-            vec![Box::new(RadioButtons::new(
-                rect(1, 0, 16, 3),
-                &["Unix (LF)", "DOS (CRLF)", "Mac (CR)"],
-                theme,
-            ))],
+
+    // `.non_wrapping()` (ADR 0031) is essential here, not optional: without
+    // it, a boundary Tab/Shift-Tab wraps back onto this Group's own two
+    // focusable children (InputLine/CheckBox) forever and never reports
+    // `Ignored`, so it can never escape back out to TabbedPages' strip —
+    // found during the manual tmux pass (Tab worked fine on "Formatting"
+    // only because GroupBox already makes its own interior non-wrapping).
+    let general: Box<dyn View> = Box::new(
+        Group::new(
+            rect(0, 0, 28, 4),
+            vec![
+                Box::new(Label::new(rect(0, 0, 8, 1), "Name:", theme)),
+                Box::new(InputLine::new(rect(8, 0, 20, 1), theme).with_text("untitled.txt")),
+                Box::new(CheckBox::new(rect(0, 2, 28, 1), "Word wrap", theme).with_checked(true)),
+            ],
+        )
+        .non_wrapping(),
+    );
+    let formatting: Box<dyn View> = Box::new(GroupBox::new(
+        rect(0, 0, 20, 5),
+        "Line endings",
+        vec![Box::new(RadioButtons::new(
+            rect(1, 0, 16, 3),
+            &["Unix (LF)", "DOS (CRLF)", "Mac (CR)"],
             theme,
-        )),
+        ))],
+        theme,
+    ));
+    // Dialog interior is 32 columns wide (size.width - 2); a 1-column left
+    // margin (mirroring the original layout) plus this widget's own width
+    // must not exceed that, or its right border clips against the Window's
+    // own frame (found during the manual tmux pass).
+    let tabs = TabbedPages::new(
+        rect(1, 1, 30, 8),
+        vec![("General", general), ("Formatting", formatting)],
+        theme,
+    );
+
+    let controls: Vec<Box<dyn View>> = vec![
+        Box::new(tabs),
         Box::new(Button::new(rect(8, 10, 10, 1), "OK", CM_OK, theme).default(true)),
         Box::new(Button::new(rect(20, 10, 10, 1), "Cancel", cancel, theme)),
     ];

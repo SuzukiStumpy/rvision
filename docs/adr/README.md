@@ -50,5 +50,6 @@ workspace from the start, so it kept its original number unchanged.
 | [0035](0035-coalesce-terminal-writes-into-runs.md) | Coalesce `CrosstermBackend::present`'s writes into same-row, same-style runs instead of one write per changed cell |
 | [0036](0036-any-downcast-for-window-interior-content.md) | `Any`-based downcast access to a `Window`'s interior content, for app code reaching in from outside `draw`/`handle_event` dispatch |
 | [0037](0037-window-list-shell-hosted-command-interception.md) | Window list: unconditional `Shell` command interception, read back via `Any` downcast (ADR 0036) instead of a shared handle |
+| [0038](0038-per-view-reset-focus-protocol.md) | Per-view `reset_focus` protocol (`View::reset_focus`, `Group`/`GroupBox`): a caller can reset a nested group's remembered focus cursor back to its first focusable child, resolving ADR 0031's stale-re-entry open question |
 
 New decision? Copy [`0000-template.md`](0000-template.md).

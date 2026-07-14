@@ -48,7 +48,7 @@ Questions raised by extraction itself (`edit`'s ADR 0024).
 
 Raised in a backlog-planning conversation; #1 originally gated several of
 the others. Most of this list is now landed — what's left open is #4, #5,
-the tab bar sub-item of #6, and help's topic-level merge under #9.
+and help's topic-level merge under #9.
 
 1. ~~**True colour support.**~~ Landed 2026-07-03: `ColorProfile::detect()`
    (ADR 0023) chooses truecolour vs. 16-colour CGA from env vars;
@@ -73,12 +73,12 @@ the tab bar sub-item of #6, and help's topic-level merge under #9.
    loop) before it can be scoped further.
 5. **TypeScript/JavaScript bindings.** Same story as #4, and likely lower
    priority; deferred for the same reason.
-6. **New widgets.** ~~Combo box~~ (`widgets::ComboBox`, ADR 0030's
-   `View::wants_topmost`), ~~group box~~ (`widgets::GroupBox`, ADR 0031's
-   `Group::non_wrapping`), ~~status panel~~ (`widgets::StatusPanel`, ADR
-   0032's `View::status_text`), and ~~TextArea~~
-   (`docs/specs/text_area.md`, sharing `widgets::text_edit` with
-   `InputLine`) are all landed. **Tab bar remains unscoped/undesigned.**
+6. ~~**New widgets.**~~ All landed: combo box (`widgets::ComboBox`, ADR
+   0030's `View::wants_topmost`), group box (`widgets::GroupBox`, ADR 0031's
+   `Group::non_wrapping`), status panel (`widgets::StatusPanel`, ADR 0032's
+   `View::status_text`), TextArea (`docs/specs/text_area.md`, sharing
+   `widgets::text_edit` with `InputLine`), and tab bar
+   (`widgets::TabbedPages`, `docs/specs/tabbed_pages.md`).
 7. ~~**Insert/overtype support**~~ for text entry. Landed: `InputLine`/
    `TextArea` gained an `overtype` toggle (`Insert` key); the caret style
    follows the mode.
