@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/SuzukiStumpy/rvision/compare/v2.4.0...v2.5.0) (2026-07-14)
+
+
+### Features
+
+* add a Reset action to widgets::WindowList (refs [#9](https://github.com/SuzukiStumpy/rvision/issues/9)) ([f8029c8](https://github.com/SuzukiStumpy/rvision/commit/f8029c81a464ae5df7855f1729c85bcc2a97d430))
+
 ## [2.4.0](https://github.com/SuzukiStumpy/rvision/compare/v2.3.0...v2.4.0) (2026-07-14)
 
 
