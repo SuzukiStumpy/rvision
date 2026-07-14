@@ -111,9 +111,10 @@ Open questions this raises, not yet decided:
   already being honoured before there was anyone outside `edit` for it to
   matter to. Nothing further to decide unless a real incident against a
   downstream consumer shows that mechanical policy isn't enough in practice.
-- **Apple Silicon macOS verification.** `edit`'s Phase 10 exit criteria left
-  this "pending hardware" — CI builds it, but no manual terminal-quirk pass has
-  happened on that platform. Still open, low urgency, blocks nothing.
+- ~~**Apple Silicon macOS verification.**~~ Confirmed 2026-07-14: a manual
+  terminal pass on Apple Silicon macOS found no quirks. `edit`'s Phase 10
+  exit criteria had left this "pending hardware" since CI only builds for
+  the platform, never runs on it; that gap is now closed.
 
 ## Backlog (new, unscheduled — raised 2026-07-03)
 
@@ -253,6 +254,54 @@ retired in favour of a fresh roadmap with proper phases/milestones.
      `examples/dialogs.rs`'s colour-picker gating — and actually applies the
      picked theme to its own closing screen, not just to the dialog's own
      preview.
+   - ~~**Window list dialog.**~~ Landed 2026-07-14:
+     [`widgets::WindowList`](../src/widgets/window_list.rs) — a TurboVision-
+     style "Window List": a `ListBox` of every open `Desktop` window
+     (title) plus a *Close* button. Double-click a row (or select +
+     `Enter`) raises it and dismisses the list; select + *Close* terminates
+     it and leaves the list open, refreshed, so several windows can be
+     closed in one visit. The "type" column originally sketched was cut
+     after asking — `Window`/`Desktop` track no such concept, and adding
+     one speculatively for this alone wasn't justified.
+     - Turned out **not** to be a thin `ListBox`-backed view over state a
+       caller already owns, unlike this bullet originally assumed: every
+       other standard dialog (`ColorPicker`/`ThemePicker`/`FileDialog`) is
+       a one-shot `exec_view` picker, which can't survive a Close-and-
+       stay-open requirement (the caller's background `Program` receives
+       no events while `exec_view`'s loop is up). Landed instead as a
+       non-modal `Desktop`-hosted window (`HelpWindow`/`ThemeEditor`'s
+       shape) that `Shell` opens and drives **unconditionally** — no
+       `with_help`-style opt-in, since building/refreshing it needs only
+       `Desktop`'s own state, nothing app-supplied. `WindowList` itself
+       stays fully `Desktop`-ignorant (ADR 0003): it posts one of two new
+       framework commands (`CM_WINDOW_LIST_ACTIVATE`/`CM_WINDOW_LIST_CLOSE`)
+       and records the target in a plain field; `Shell` reads it back via
+       `Desktop::content_mut::<WindowList>` — ADR 0036's downcast seam,
+       which landed the day before this and made a second
+       `Rc<RefCell<...>>` result-handle type (`ColorPickerResult`'s own
+       idiom) unnecessary. Recorded as its own ADR 0037, distinct from ADR
+       0021 (`CM_HELP`'s opt-in shape) and ADR 0026 (`ThemeEditor`'s
+       shared-handle shape) since neither was an exact fit. See
+       [`docs/specs/window_list.md`](specs/window_list.md) and ADR 0037.
+     - Two small additive gaps surfaced while building the snapshot:
+       `Window`/`Frame` gained a `title()` getter (there was a setter,
+       `set_title`, but nothing to read it back) and `Desktop` gained
+       `windows()`, an iterator over every open `(WindowId, &Window)` —
+       both one-liners, same "additive, in the same family as an existing
+       setter" precedent as `set_title` itself.
+     - Manual pass: `examples/mdi.rs` (not `chrome.rs`, which only ever
+       opens one window and so has nothing to list) — `Alt-0`/Window ▸
+       Window List... in a real terminal (tmux), confirmed select-and-
+       activate-and-dismiss and select-then-Close-stays-open-refreshed
+       against several open documents. Surfaced one real gap: activating
+       the (hidden-by-default) toolbox from the list silently did nothing,
+       because `Shell` had used `Desktop::focus` — which deliberately
+       no-ops on a hidden window (that's what makes `F6`/Next-Previous
+       cycling correctly skip it) — for a case that actually meant
+       `Desktop::show` (raise *and* un-hide, "like click-to-front, but
+       programmatic"). Fixed by switching that one call; a hidden window
+       picked from the list now shows and raises exactly like a visible
+       one, re-confirmed both in a unit test and the same tmux session.
 3. **Utility programs.** Help authoring tool; theme builder; possibly more.
    - Scoped 2026-07-03: the theme builder is a developer-facing tool for
      authoring a theme to ship *with* an application, most likely a thin
