@@ -1,6 +1,6 @@
 ---
 source: src/widgets/window_list.rs
-assertion_line: 500
+assertion_line: 610
 expression: render(&w)
 ---
 Alpha                         
@@ -11,4 +11,4 @@ Beta
                               
                               
                               
-    Close
+    Close       Reset

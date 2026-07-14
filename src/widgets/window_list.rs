@@ -11,7 +11,7 @@
 
 use crate::canvas::Canvas;
 use crate::cell::Cell;
-use crate::command::{CM_WINDOW_LIST_ACTIVATE, CM_WINDOW_LIST_CLOSE};
+use crate::command::{CM_WINDOW_LIST_ACTIVATE, CM_WINDOW_LIST_CLOSE, CM_WINDOW_LIST_RESET};
 use crate::event::{Event, EventResult, KeyCode, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect, Size};
 use crate::theme::{Role, Theme};
@@ -25,7 +25,8 @@ const LIST_W: i16 = 30;
 const LIST_H: i16 = 8;
 const BOTTOM_Y: i16 = LIST_H;
 const CLOSE_X: i16 = 2;
-const CLOSE_W: i16 = 10;
+const RESET_X: i16 = 14;
+const BUTTON_W: i16 = 10;
 
 const WIDTH: i16 = LIST_W;
 const HEIGHT: i16 = BOTTOM_Y + 1;
@@ -50,6 +51,9 @@ pub enum WindowListAction {
     Activate(WindowId),
     /// Close this window; the list itself stays open, refreshed.
     Close(WindowId),
+    /// Clamp this window's bounds back onto the desktop and bring it to
+    /// front; the list itself stays open (mirrors `Close`, not `Activate`).
+    Reset(WindowId),
 }
 
 /// Where focus currently sits.
@@ -57,9 +61,10 @@ pub enum WindowListAction {
 enum Focus {
     List,
     Close,
+    Reset,
 }
 
-const FOCUS_ORDER: [Focus; 2] = [Focus::List, Focus::Close];
+const FOCUS_ORDER: [Focus; 3] = [Focus::List, Focus::Close, Focus::Reset];
 
 /// The interior control: a titles list plus a Close button.
 pub struct WindowList {
@@ -67,6 +72,7 @@ pub struct WindowList {
     ids: Vec<WindowId>,
     list: ListBox,
     close: Button,
+    reset: Button,
     focus: Focus,
     pending: Option<WindowListAction>,
 }
@@ -82,9 +88,15 @@ impl WindowList {
             ids,
             list,
             close: Button::new(
-                rect(CLOSE_X, BOTTOM_Y, CLOSE_W, 1),
+                rect(CLOSE_X, BOTTOM_Y, BUTTON_W, 1),
                 "Close",
                 CM_WINDOW_LIST_CLOSE,
+                theme,
+            ),
+            reset: Button::new(
+                rect(RESET_X, BOTTOM_Y, BUTTON_W, 1),
+                "Reset",
+                CM_WINDOW_LIST_RESET,
                 theme,
             ),
             focus: Focus::List,
@@ -122,6 +134,7 @@ impl WindowList {
     fn apply_focus(&mut self) {
         self.list.set_focused(self.focus == Focus::List);
         self.close.set_focused(self.focus == Focus::Close);
+        self.reset.set_focused(self.focus == Focus::Reset);
     }
 
     fn move_focus(&mut self, delta: isize) {
@@ -157,10 +170,20 @@ impl WindowList {
         }
     }
 
+    /// Records `Reset(selected)` and posts `CM_WINDOW_LIST_RESET` — a no-op
+    /// on an empty list, same shape as `activate_close`.
+    fn activate_reset(&mut self, ctx: &mut Context) {
+        if let Some(id) = self.selected_id() {
+            self.pending = Some(WindowListAction::Reset(id));
+            ctx.post(CM_WINDOW_LIST_RESET);
+        }
+    }
+
     fn on_enter(&mut self, ctx: &mut Context) -> EventResult {
         match self.focus {
             Focus::List => self.activate_selected(ctx),
             Focus::Close => self.activate_close(ctx),
+            Focus::Reset => self.activate_reset(ctx),
         }
         EventResult::Consumed
     }
@@ -168,7 +191,7 @@ impl WindowList {
     fn route(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
         match self.focus {
             Focus::List => self.list.handle_event(event, ctx),
-            Focus::Close => EventResult::Ignored,
+            Focus::Close | Focus::Reset => EventResult::Ignored,
         }
     }
 
@@ -185,6 +208,10 @@ impl WindowList {
             KeyCode::Enter => self.on_enter(ctx),
             KeyCode::Char(' ') if self.focus == Focus::Close => {
                 self.activate_close(ctx);
+                EventResult::Consumed
+            }
+            KeyCode::Char(' ') if self.focus == Focus::Reset => {
+                self.activate_reset(ctx);
                 EventResult::Consumed
             }
             _ => self.route(event, ctx),
@@ -212,6 +239,12 @@ impl WindowList {
             self.activate_close(ctx);
             return EventResult::Consumed;
         }
+        if self.reset.bounds().contains(m.pos) {
+            self.focus = Focus::Reset;
+            self.apply_focus();
+            self.activate_reset(ctx);
+            return EventResult::Consumed;
+        }
         EventResult::Ignored
     }
 }
@@ -234,6 +267,9 @@ impl View for WindowList {
 
         let mut child = canvas.child(self.close.bounds());
         self.close.draw(&mut child);
+
+        let mut child = canvas.child(self.reset.bounds());
+        self.reset.draw(&mut child);
     }
 
     fn handle_event(&mut self, event: &Event, ctx: &mut Context) -> EventResult {
@@ -455,6 +491,48 @@ mod tests {
         assert!(w.take_pending().is_none());
     }
 
+    // --- Reset ---
+
+    #[test]
+    fn reset_records_reset_and_posts_the_command_leaving_the_list_untouched() {
+        let (desk, mut w) = widget();
+        let target = desk.windows().next().unwrap().0; // "Alpha", selected by default
+        tab_to(&mut w, Focus::Reset);
+        let posted = press_posting(&mut w, KeyCode::Enter);
+        assert_eq!(posted, vec![Event::Command(CM_WINDOW_LIST_RESET)]);
+        assert_eq!(w.take_pending(), Some(WindowListAction::Reset(target)));
+        assert_eq!(
+            w.list.selected_text(),
+            Some("Alpha"),
+            "the row is still shown"
+        );
+    }
+
+    #[test]
+    fn a_click_on_reset_records_reset_and_posts_the_command() {
+        let (desk, mut w) = widget();
+        let target = desk.windows().next().unwrap().0;
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseKind::Down(MouseButton::Left),
+            pos: w.reset.bounds().origin(),
+            modifiers: Modifiers::NONE,
+        });
+        assert_eq!(w.handle_event(&click, &mut ctx), EventResult::Consumed);
+        assert_eq!(ctx.posted(), &[Event::Command(CM_WINDOW_LIST_RESET)]);
+        assert_eq!(w.take_pending(), Some(WindowListAction::Reset(target)));
+    }
+
+    #[test]
+    fn reset_on_an_empty_list_posts_nothing() {
+        let mut w = WindowList::new(Vec::new(), &Theme::default());
+        tab_to(&mut w, Focus::Reset);
+        let posted = press_posting(&mut w, KeyCode::Enter);
+        assert!(posted.is_empty());
+        assert!(w.take_pending().is_none());
+    }
+
     // --- take_pending ---
 
     #[test]
@@ -489,15 +567,21 @@ mod tests {
     // --- Tab order ---
 
     #[test]
-    fn tab_cycles_list_and_close_and_wraps() {
+    fn tab_cycles_list_close_and_reset_and_wraps() {
         let (_desk, mut w) = widget();
         assert_eq!(w.focus, Focus::List);
         press(&mut w, KeyCode::Tab);
         assert_eq!(w.focus, Focus::Close);
         press(&mut w, KeyCode::Tab);
-        assert_eq!(w.focus, Focus::List);
+        assert_eq!(w.focus, Focus::Reset);
+        press(&mut w, KeyCode::Tab);
+        assert_eq!(w.focus, Focus::List, "wraps back to List after Reset");
         press(&mut w, KeyCode::BackTab);
-        assert_eq!(w.focus, Focus::Close);
+        assert_eq!(
+            w.focus,
+            Focus::Reset,
+            "backtab from List wraps to the new last stop"
+        );
     }
 
     // A stray application command must never be confused with the framework
@@ -508,6 +592,7 @@ mod tests {
     fn framework_commands_are_the_only_ones_this_widget_posts() {
         assert_ne!(CM_WINDOW_LIST_ACTIVATE, CM_UNRELATED);
         assert_ne!(CM_WINDOW_LIST_CLOSE, CM_UNRELATED);
+        assert_ne!(CM_WINDOW_LIST_RESET, CM_UNRELATED);
     }
 
     // --- Render (snapshot) ---
@@ -534,7 +619,7 @@ mod tests {
         // not a re-test of `Button`/`ListBox`'s own already-tested colours.
         let (_desk, mut w) = widget();
         let theme = Theme::default();
-        let close_label_x = w.close.bounds().origin().x + (CLOSE_W - "Close".len() as i16) / 2;
+        let close_label_x = w.close.bounds().origin().x + (BUTTON_W - "Close".len() as i16) / 2;
         let close_cell = |w: &WindowList| {
             let mut buf = Buffer::new(w.bounds().size());
             let mut c = Canvas::new(&mut buf);
@@ -547,6 +632,26 @@ mod tests {
         assert_eq!(close_cell(&w), theme.style(Role::ButtonNormal));
         tab_to(&mut w, Focus::Close);
         assert_eq!(close_cell(&w), theme.style(Role::ButtonFocused));
+    }
+
+    #[test]
+    fn tabbing_to_reset_actually_moves_drawn_focus_there() {
+        // Same plumbing check as `tabbing_to_close_...`, for the new button.
+        let (_desk, mut w) = widget();
+        let theme = Theme::default();
+        let reset_label_x = w.reset.bounds().origin().x + (BUTTON_W - "Reset".len() as i16) / 2;
+        let reset_cell = |w: &WindowList| {
+            let mut buf = Buffer::new(w.bounds().size());
+            let mut c = Canvas::new(&mut buf);
+            w.draw(&mut c);
+            buf.get(Point::new(reset_label_x, BOTTOM_Y))
+                .unwrap()
+                .style()
+        };
+
+        assert_eq!(reset_cell(&w), theme.style(Role::ButtonNormal));
+        tab_to(&mut w, Focus::Reset);
+        assert_eq!(reset_cell(&w), theme.style(Role::ButtonFocused));
     }
 
     #[test]

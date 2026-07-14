@@ -12,13 +12,17 @@
 
 A live view of every window currently open on a `Desktop` — TurboVision's
 "Window List." Lets a user bring any window to the front (and dismiss the
-list) or terminate one outright, without hunting for it under overlapping
-chrome. It is **not** a modal picker (contrast `ThemePicker`/`ColorPicker`):
-it must stay open and reflect `Desktop`'s state across a `Close`, so several
-windows can be closed in one visit. It is **not** itself where `Desktop`
-mutation happens — `WindowList` only records what the user asked for; the
-code hosting it (`Shell`) is the one with a `Desktop` to act on (ADR 0003,
-ADR 0037).
+list), terminate one outright, or reset one's size/position back onto the
+desktop, without hunting for it under overlapping chrome. Reset exists as
+the manual recovery path GitHub issue #9 asked for: `Desktop::continue_drag`
+never clamps a dragged/resized window to the desktop's own bounds, so a
+window can in principle end up off-screen or oversized with no other way
+back. It is **not** a modal picker (contrast `ThemePicker`/`ColorPicker`):
+it must stay open and reflect `Desktop`'s state across a `Close`/`Reset`, so
+several windows can be fixed or closed in one visit. It is **not** itself
+where `Desktop` mutation happens — `WindowList` only records what the user
+asked for; the code hosting it (`Shell`) is the one with a `Desktop` to act
+on (ADR 0003, ADR 0037).
 
 ## Public interface
 
@@ -29,10 +33,13 @@ ADR 0037).
 pub enum WindowListAction {
     Activate(WindowId),
     Close(WindowId),
+    /// Clamp this window's bounds back onto the desktop and bring it to
+    /// front; the list itself stays open (mirrors `Close`, not `Activate`).
+    Reset(WindowId),
 }
 
-/// A titles-only list of open windows plus a Close button.
-pub struct WindowList { /* ListBox + parallel Vec<WindowId> + Close Button */ }
+/// A titles-only list of open windows plus Close/Reset buttons.
+pub struct WindowList { /* ListBox + parallel Vec<WindowId> + Close/Reset Buttons */ }
 
 impl WindowList {
     /// `entries` is shown in list order, id-per-row. `theme` styles the
@@ -72,7 +79,10 @@ impl View for WindowList { /* ... */ }
   selected records `Close(id)` and posts `CM_WINDOW_LIST_CLOSE`. With
   nothing selected (only possible on an empty list), Close is a no-op that
   posts nothing.
-- `Tab`/`BackTab` cycles `List ⇄ Close` and wraps, same shape as
+- Clicking **Reset** (or `Enter`/`Space` while Reset is focused) with a row
+  selected records `Reset(id)` and posts `CM_WINDOW_LIST_RESET`; empty-list
+  behaviour mirrors Close (a no-op, nothing posted).
+- `Tab`/`BackTab` cycles `List ⇄ Close ⇄ Reset` and wraps, same shape as
   `ThemePicker`'s `Focus`/`FOCUS_ORDER` minus the OK/Cancel pair.
   `take_pending` never has a bearing on where focus is.
 - `take_pending` returns `None` and leaves state untouched when nothing is
@@ -92,10 +102,17 @@ impl View for WindowList { /* ... */ }
   does.
 - Hosted and driven entirely by `Shell` (`src/app.rs`): `Shell` builds the
   initial snapshot from `Desktop::windows()`, opens it via `Desktop::open`,
-  and — on `CM_WINDOW_LIST_ACTIVATE`/`CM_WINDOW_LIST_CLOSE` bubbling back up
-  — reads `take_pending()` through `Desktop::content_mut::<WindowList>`
-  (ADR 0036) and acts on `Desktop` directly (`focus`/`close`). See ADR 0037
-  for why this lives in `Shell` unconditionally rather than behind an
+  and — on `CM_WINDOW_LIST_ACTIVATE`/`CM_WINDOW_LIST_CLOSE`/
+  `CM_WINDOW_LIST_RESET` bubbling back up — reads `take_pending()` through
+  `Desktop::content_mut::<WindowList>` (ADR 0036) and acts on `Desktop`
+  directly. `Activate` → `show`+close the list; `Close` → `close`+refresh;
+  `Reset` → clamp the target's bounds via `arrange::clamp_rect`, `show` the
+  target, then `show` the list itself again immediately after — `Desktop::
+  show`/`raise` unconditionally reassigns `active` (keyboard routing)
+  regardless of any `topmost` flag, so without that second `show` the list
+  would silently lose keyboard focus to the just-fixed window the instant
+  it stayed open, defeating the point of a "stays open" action. See ADR
+  0037 for why this lives in `Shell` unconditionally rather than behind an
   opt-in like `with_help`.
 
 ## Test plan (write these first)
@@ -104,19 +121,24 @@ impl View for WindowList { /* ... */ }
   `Enter`/`DoubleClick` on the list sets `pending = Activate(selected)` and
   posts `CM_WINDOW_LIST_ACTIVATE`; a plain click never sets `pending`;
   Close sets `pending = Close(selected)` and posts `CM_WINDOW_LIST_CLOSE`;
-  Close with an empty list posts nothing and leaves `pending` `None`;
+  Reset sets `pending = Reset(selected)` and posts `CM_WINDOW_LIST_RESET`;
+  Close/Reset with an empty list post nothing and leave `pending` `None`;
   `take_pending` clears after reading; `set_entries` rebuilds rows and
-  drops a selection whose id is no longer present; Tab/BackTab cycles and
-  wraps; framework commands posted are only the two above (no stray
-  app-numbered command confusion, mirroring `ThemePicker`'s own guard test).
-- **Render (snapshot):** populated list, list focused; Close focused;
-  empty-list state.
+  drops a selection whose id is no longer present; Tab/BackTab cycles
+  `List ⇄ Close ⇄ Reset` and wraps; framework commands posted are only the
+  three above (no stray app-numbered command confusion, mirroring
+  `ThemePicker`'s own guard test).
+- **Render (snapshot):** populated list, list focused; Close focused; Reset
+  focused; empty-list state.
 - **Interaction (scripted events):** a `DoubleClick` on a row followed by
   reading `take_pending` end to end; a `Close`-click → `set_entries` refresh
-  round trip.
+  round trip; a `Reset`-click on an out-of-bounds window → `Shell` clamps
+  its bounds, raises it, and the list keeps keyboard focus.
 - **Manual:** `examples/chrome.rs`'s Window ▸ Window List... — open several
   windows, double-click a background one (front + dialog closes), reopen,
-  select another + Close (terminates, dialog stays open, entry gone).
+  select another + Close (terminates, dialog stays open, entry gone); drag
+  a window far off-screen, open the list, select it + Reset (snaps back
+  on-screen, raised, list still has keyboard focus without an extra click).
 
 ## Open questions
 
@@ -130,3 +152,14 @@ A manual pass (`examples/mdi.rs`, tmux) surfaced one real gap, since fixed:
 `CM_PREV` cycling skips one correctly), but picking a hidden window from
 this list should always bring it to front. `WindowList` itself is unchanged
 by this — the fix lives entirely in `Shell::resolve_window_list_action`.
+
+**Known limitation, not fixed (GitHub issue #9 partial fix):** `Reset`
+clamps a window's *current* bounds back onto the desktop; it doesn't touch
+`Window`'s own `maximized`/restore bookkeeping. `CM_ZOOM` sets a maximized
+window's bounds to exactly the desktop's size at zoom time, so `Reset` is a
+no-op against the *same* desktop size — but if the terminal shrinks after a
+window is maximized (`Desktop::set_bounds` never re-fits an already-
+maximized window), `Reset`'s clamp would shrink its bounds without updating
+the zoom glyph/toggle state, which could then look stale. Same spirit as
+this work leaving `Desktop::continue_drag`'s missing clamp ceiling
+unfixed — a follow-up, not part of this action's scope.

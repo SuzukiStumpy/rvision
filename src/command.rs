@@ -60,6 +60,15 @@ pub const CM_WINDOW_LIST_ACTIVATE: Command = Command(14);
 /// back rather than carried; unlike activation, the list itself stays open
 /// afterward, refreshed.
 pub const CM_WINDOW_LIST_CLOSE: Command = Command(15);
+/// Posted by `WindowList` when the user asks to reset a listed window's
+/// bounds via its own Reset button — the manual recovery path GitHub issue
+/// #9 asked for, since `Desktop::continue_drag` never clamps a
+/// dragged/resized window to the desktop's own bounds. As
+/// `CM_WINDOW_LIST_ACTIVATE`/`_CLOSE`, the target is read back rather than
+/// carried; the hosting `Shell` clamps its bounds back onto the desktop
+/// (`arrange::clamp_rect`) and brings it to front, and the list itself
+/// stays open afterward, as with `_CLOSE`.
+pub const CM_WINDOW_LIST_RESET: Command = Command(16);
 
 /// The first command id reserved for the **application**.
 ///

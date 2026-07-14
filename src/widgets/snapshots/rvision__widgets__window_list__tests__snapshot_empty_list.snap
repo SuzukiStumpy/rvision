@@ -1,6 +1,6 @@
 ---
 source: src/widgets/window_list.rs
-assertion_line: 528
+assertion_line: 660
 expression: render(&w)
 ---
  No open windows.             
@@ -11,4 +11,4 @@ expression: render(&w)
                               
                               
                               
-    Close
+    Close       Reset

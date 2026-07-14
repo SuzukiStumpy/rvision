@@ -10,12 +10,13 @@
 //! Phase 3 the root view tree takes the [`Program`] role; in Phase 2 a demo or a
 //! test does (ADR 0003, 0004).
 
+use crate::arrange;
 use crate::backend::{Backend, EventSource};
 use crate::buffer::Buffer;
 use crate::canvas::Canvas;
 use crate::command::{
-    CM_HELP, CM_QUIT, CM_WINDOW_LIST, CM_WINDOW_LIST_ACTIVATE, CM_WINDOW_LIST_CLOSE, Command,
-    CommandSet,
+    CM_HELP, CM_QUIT, CM_WINDOW_LIST, CM_WINDOW_LIST_ACTIVATE, CM_WINDOW_LIST_CLOSE,
+    CM_WINDOW_LIST_RESET, Command, CommandSet,
 };
 use crate::event::{Event, EventResult, MouseButton, MouseEvent, MouseKind};
 use crate::geometry::{Point, Rect, Size};
@@ -579,8 +580,13 @@ impl Shell {
     /// downcast, per ADR 0037 — `WindowList` has no `Desktop` reference of
     /// its own to act with) and applies it: `Activate` raises the target and
     /// dismisses the list; `Close` closes the target and refreshes the
-    /// still-open list. A no-op if the list isn't open or nothing is
-    /// pending (e.g. a stray re-dispatch).
+    /// still-open list; `Reset` clamps the target's bounds back onto the
+    /// desktop (`arrange::clamp_rect`, GitHub issue #9's manual recovery
+    /// path for a window `Desktop::continue_drag` never clamps) and raises
+    /// it, then re-raises the list itself so the still-open dialog keeps
+    /// keyboard focus (`Desktop::show`/`raise` unconditionally reassigns
+    /// `active`, regardless of any `topmost` flag). A no-op if the list
+    /// isn't open or nothing is pending (e.g. a stray re-dispatch).
     fn resolve_window_list_action(&mut self, ctx: &mut Context) {
         let Some(list_id) = self.window_list else {
             return;
@@ -606,6 +612,15 @@ impl Shell {
                 if let Some(list) = self.desktop.content_mut::<WindowList>(list_id) {
                     list.set_entries(entries);
                 }
+            }
+            Some(WindowListAction::Reset(target)) => {
+                let desktop_size = self.desktop.bounds().size();
+                if let Some(window) = self.desktop.window_mut(target) {
+                    let clamped = arrange::clamp_rect(window.bounds(), desktop_size);
+                    window.set_bounds(clamped);
+                }
+                self.desktop.show(target);
+                self.desktop.show(list_id);
             }
             None => {}
         }
@@ -754,7 +769,10 @@ impl View for Shell {
                     self.open_window_list(ctx);
                     return EventResult::Consumed;
                 }
-                if *command == CM_WINDOW_LIST_ACTIVATE || *command == CM_WINDOW_LIST_CLOSE {
+                if *command == CM_WINDOW_LIST_ACTIVATE
+                    || *command == CM_WINDOW_LIST_CLOSE
+                    || *command == CM_WINDOW_LIST_RESET
+                {
                     self.resolve_window_list_action(ctx);
                     return EventResult::Consumed;
                 }
@@ -1875,6 +1893,66 @@ mod tests {
     }
 
     #[test]
+    fn resetting_a_listed_window_clamps_its_bounds_and_leaves_the_list_open() {
+        let (mut sh, ids) = shell_with_windows(Size::new(40, 10), &["Alpha", "Beta"]);
+        let alpha = ids[0];
+        let cs = CommandSet::new();
+        let mut ctx = Context::new(&cs);
+
+        // Push Alpha out of bounds directly — this test is about Reset's
+        // own effect, not how a window gets there (that's `continue_drag`'s
+        // still-open gap, out of scope here).
+        sh.desktop_mut()
+            .window_mut(alpha)
+            .unwrap()
+            .set_bounds(Rect::from_origin_size(
+                Point::new(500, 500),
+                Size::new(10, 4),
+            ));
+
+        sh.handle_event(&Event::Command(CM_WINDOW_LIST), &mut ctx);
+        let list_id = sh.desktop_mut().active_id().unwrap();
+
+        {
+            let list = sh.desktop_mut().content_mut::<WindowList>(list_id).unwrap();
+            // Tab from List to Close to Reset, then activate it — Alpha is
+            // selected by default.
+            list.handle_event(
+                &Event::Key(KeyEvent::new(KeyCode::Tab, Modifiers::NONE)),
+                &mut ctx,
+            );
+            list.handle_event(
+                &Event::Key(KeyEvent::new(KeyCode::Tab, Modifiers::NONE)),
+                &mut ctx,
+            );
+            list.handle_event(
+                &Event::Key(KeyEvent::new(KeyCode::Enter, Modifiers::NONE)),
+                &mut ctx,
+            );
+        }
+        sh.handle_event(&Event::Command(CM_WINDOW_LIST_RESET), &mut ctx);
+
+        let bounds = sh.desktop_mut().window(alpha).unwrap().bounds();
+        let size = sh.desktop_mut().bounds().size();
+        assert!(
+            bounds.origin().x >= 0
+                && bounds.origin().y >= 0
+                && bounds.origin().x + bounds.width() <= size.width
+                && bounds.origin().y + bounds.height() <= size.height,
+            "alpha's bounds are back within the desktop: {bounds:?} vs {size:?}"
+        );
+        assert!(
+            sh.desktop_mut().window(list_id).is_some(),
+            "the list itself stays open"
+        );
+        assert_eq!(
+            sh.desktop_mut().active_id(),
+            Some(list_id),
+            "the list keeps keyboard focus rather than losing it to the just-reset window"
+        );
+    }
+
+    #[test]
     fn window_list_commands_are_a_safe_no_op_with_no_list_open() {
         let (mut sh, _ids) = shell_with_windows(Size::new(40, 10), &["Alpha"]);
         let cs = CommandSet::new();
@@ -1885,6 +1963,10 @@ mod tests {
         );
         assert_eq!(
             sh.handle_event(&Event::Command(CM_WINDOW_LIST_CLOSE), &mut ctx),
+            EventResult::Consumed
+        );
+        assert_eq!(
+            sh.handle_event(&Event::Command(CM_WINDOW_LIST_RESET), &mut ctx),
             EventResult::Consumed
         );
     }
